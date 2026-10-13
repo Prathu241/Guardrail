@@ -1,0 +1,5 @@
+[
+  {"name": "Support Desk", "email": "support@acme-outfitters.example", "role": "support"},
+  {"name": "Billing", "email": "billing@acme-outfitters.example", "role": "billing"},
+  {"name": "Morgan Lee", "email": "morgan.lee@acme-outfitters.example", "role": "support_manager"}
+]

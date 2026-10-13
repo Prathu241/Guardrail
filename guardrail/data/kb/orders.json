@@ -1,0 +1,9 @@
+[
+  {"id": "O-5001", "customer_id": "C-1001", "status": "delivered", "delivered_on": "2026-09-20", "items": [{"sku": "LNT-200", "qty": 1, "unit_price": 49.99}, {"sku": "TNT-410", "qty": 1, "unit_price": 129.99}, {"sku": "MUG-010", "qty": 1, "unit_price": 9.99}], "total": 189.97, "refunded": 0.0},
+  {"id": "O-5002", "customer_id": "C-1001", "status": "delivered", "delivered_on": "2026-08-05", "items": [{"sku": "STV-090", "qty": 1, "unit_price": 64.5}], "total": 64.5, "refunded": 0.0},
+  {"id": "O-5003", "customer_id": "C-1002", "status": "delivered", "delivered_on": "2026-09-25", "items": [{"sku": "BAG-115", "qty": 1, "unit_price": 89.99}, {"sku": "MUG-010", "qty": 2, "unit_price": 9.99}], "total": 109.97, "refunded": 19.98},
+  {"id": "O-5004", "customer_id": "C-1003", "status": "processing", "delivered_on": null, "items": [{"sku": "KYK-700", "qty": 1, "unit_price": 649.0}], "total": 649.0, "refunded": 0.0},
+  {"id": "O-5005", "customer_id": "C-1002", "status": "delivered", "delivered_on": "2026-09-28", "items": [{"sku": "KYK-700", "qty": 1, "unit_price": 649.0}], "total": 649.0, "refunded": 0.0},
+  {"id": "O-5006", "customer_id": "C-1003", "status": "cancelled", "delivered_on": null, "items": [{"sku": "TNT-410", "qty": 1, "unit_price": 129.99}], "total": 129.99, "refunded": 129.99},
+  {"id": "O-5007", "customer_id": "C-1001", "status": "delivered", "delivered_on": "2026-09-27", "items": [{"sku": "STV-090", "qty": 1, "unit_price": 64.5}], "total": 64.5, "refunded": 0.0}
+]

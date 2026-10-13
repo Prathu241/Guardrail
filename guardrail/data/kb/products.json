@@ -1,0 +1,8 @@
+[
+  {"sku": "LNT-200", "name": "Trail Lantern", "price": 49.99, "stock": 34},
+  {"sku": "TNT-410", "name": "Two-Person Tent", "price": 129.99, "stock": 12},
+  {"sku": "BAG-115", "name": "Down Sleeping Bag", "price": 89.99, "stock": 0},
+  {"sku": "STV-090", "name": "Camp Stove", "price": 64.50, "stock": 20},
+  {"sku": "MUG-010", "name": "Enamel Mug", "price": 9.99, "stock": 140},
+  {"sku": "KYK-700", "name": "Inflatable Kayak", "price": 649.00, "stock": 3}
+]
