@@ -77,12 +77,44 @@ def cmd_init_db(app: App, args) -> int:
     return 0
 
 
+def deliver(app: App) -> None:
+    """The CLI has no background worker: deliver queued side effects right away."""
+    report = app.dispatcher.run_once()
+    if any(report.values()):
+        print(f"{C.DIM}outbox: {report['sent']} delivered, {report['retrying']} retrying, "
+              f"{report['failed']} failed{C.END}")
+
+
 def cmd_ask(app: App, args) -> int:
     conv = app.conversations.start(args.message, args.customer)
     print(f"{C.DIM}conversation {conv['id']}{C.END}")
     print_conversation(conv)
     for r in customer_replies(conv):
         print(f"{C.BOLD}Reply to customer:{C.END} {r}")
+    deliver(app)
+    return 0
+
+
+def cmd_outbox(app: App, args) -> int:
+    if args.action == "dispatch":
+        print(json.dumps(app.dispatcher.run_once(), indent=2))
+    elif args.action == "reconcile":
+        report = app.reconciler.run()
+        print(json.dumps(report, indent=2, default=str))
+        return 1 if any(not f.get("resolved") for f in report["findings"]) else 0
+    else:
+        for o in app.db.all("SELECT * FROM outbox ORDER BY ts, rowid"):
+            print(f"{o['id']}  {o['status']:<11} {o['channel']:<6} {o['recipient']:<22} attempts={o['attempts']} "
+                  f"{o['provider_ref'] or ''} {o['last_error'] or ''}")
+    return 0
+
+
+def cmd_incidents(app: App, args) -> int:
+    rows = app.db.all("SELECT * FROM incidents WHERE status = 'open' ORDER BY id")
+    for i in rows:
+        print(f"#{i['id']} {i['kind']} {i['ref']}  {json.dumps(i['detail'], default=str)}")
+    if not rows:
+        print("no open incidents")
     return 0
 
 
@@ -115,6 +147,7 @@ def cmd_chat(app: App, args) -> int:
                 print(f"{C.RED}{e}{C.END}")
                 continue
         print_conversation(conv, seen)
+        deliver(app)
         seen = len(conv["guard_log"])
         replies = customer_replies(conv)
         for r in replies[replied:]:
@@ -140,6 +173,7 @@ def cmd_approvals(app: App, args) -> int:
         print(f"{res['approval']['id']}: {res['approval']['status']} by {res['approval']['decided_by']}")
     if res["conversation"]:
         print_conversation(res["conversation"])
+    deliver(app)
     return 0
 
 
@@ -201,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--decision", choices=["allow", "block", "escalate"])
     p.add_argument("--limit", type=int, default=50)
     sub.add_parser("metrics", help="print aggregate metrics")
+    p = sub.add_parser("outbox", help="list, deliver or reconcile external side effects")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "dispatch", "reconcile"])
+    sub.add_parser("incidents", help="list open incidents (failed deliveries, reconciliation mismatches)")
     p = sub.add_parser("chaos", help="run sample tickets with fault injection and report the catch rate")
     p.add_argument("--rounds", type=int, default=3)
     sub.add_parser("demo", help="scripted end-to-end demo (in-memory, offline)")
@@ -228,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(settings)
     commands = {
         "serve": cmd_serve, "init-db": cmd_init_db, "ask": cmd_ask, "chat": cmd_chat, "approvals": cmd_approvals,
+        "outbox": cmd_outbox, "incidents": cmd_incidents,
         "audit": cmd_audit, "metrics": cmd_metrics, "chaos": cmd_chaos,
     }
     return commands[args.command](app, args)

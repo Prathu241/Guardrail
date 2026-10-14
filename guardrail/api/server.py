@@ -11,6 +11,7 @@ Both share the approval queue (/v1/approvals) and the audit log (/v1/audit, /v1/
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -70,17 +71,39 @@ def _verdict_json(verdict) -> dict:
 
 def create_app(app: App | None = None) -> FastAPI:
     app = app or build_app()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        # Runs when the server starts (not for a bare TestClient): finish runs a crash interrupted,
+        # then deliver and reconcile side effects in the background.
+        app.conversations.recover_incomplete()
+        worker = app.worker() if app.settings.worker_interval > 0 else None
+        api.state.worker = worker
+        if worker:
+            worker.start()
+        yield
+        if worker:
+            worker.stop()
+
     api = FastAPI(
         title="Guardrail",
-        version="0.2.0",
+        version="0.3.0",
         description="Pre-execution verification for agent tool calls.",
+        lifespan=lifespan,
     )
     api.state.app = app
+    api.state.worker = None
 
     @api.get("/healthz", tags=["ops"])
     def health() -> dict:
-        return {"status": "ok", "reviewer": app.settings.reviewer, "agent": app.settings.agent,
-                "fault_rate": app.settings.fault_rate}
+        db_ok = app.db.one("SELECT 1 AS ok")["ok"] == 1
+        worker = api.state.worker
+        outbox = {r["status"]: r["n"] for r in app.db.all("SELECT status, COUNT(*) AS n FROM outbox GROUP BY status")}
+        return {"status": "ok" if db_ok else "degraded", "database": "ok" if db_ok else "error",
+                "reviewer": app.settings.reviewer, "agent": app.settings.agent, "fault_rate": app.settings.fault_rate,
+                "worker": "running" if worker else "off", "worker_errors": worker.errors if worker else [],
+                "outbox": outbox,
+                "open_incidents": app.db.one("SELECT COUNT(*) AS n FROM incidents WHERE status = 'open'")["n"]}
 
     @api.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
@@ -210,11 +233,43 @@ def create_app(app: App | None = None) -> FastAPI:
 
     @api.get("/v1/metrics", tags=["observability"])
     def metrics() -> dict:
-        return app.guard.audit.metrics()
+        outbox = {r["status"]: r["n"] for r in app.db.all("SELECT status, COUNT(*) AS n FROM outbox GROUP BY status")}
+        incidents = {r["kind"]: r["n"] for r in app.db.all(
+            "SELECT kind, COUNT(*) AS n FROM incidents WHERE status = 'open' GROUP BY kind")}
+        return {**app.guard.audit.metrics(), "outbox": outbox, "open_incidents": incidents}
 
-    @api.get("/v1/outbox", tags=["observability"])
-    def outbox(limit: int = 100) -> list[dict]:
-        return app.db.all("SELECT * FROM outbox ORDER BY ts DESC, id DESC LIMIT ?", (limit,))
+    @api.get("/v1/outbox", tags=["side effects"])
+    def outbox(status: str | None = None, limit: int = 100) -> list[dict]:
+        """Refunds, emails and chat replies queued by executed actions, and their delivery state."""
+        if status:
+            return app.db.all("SELECT * FROM outbox WHERE status = ? ORDER BY ts DESC, rowid DESC LIMIT ?",
+                              (status, limit))
+        return app.db.all("SELECT * FROM outbox ORDER BY ts DESC, rowid DESC LIMIT ?", (limit,))
+
+    @api.post("/v1/outbox/dispatch", tags=["side effects"])
+    def dispatch() -> dict:
+        """Deliver due outbox entries now (the background worker also does this on an interval)."""
+        return app.dispatcher.run_once()
+
+    @api.post("/v1/reconcile", tags=["side effects"])
+    def reconcile() -> dict:
+        """Compare the outbox and audit log with the providers' records; open incidents for mismatches."""
+        return app.reconciler.run()
+
+    @api.get("/v1/incidents", tags=["side effects"])
+    def incidents(status: str | None = Query("open")) -> list[dict]:
+        if status == "all":
+            return app.db.all("SELECT * FROM incidents ORDER BY id DESC")
+        return app.db.all("SELECT * FROM incidents WHERE status = ? ORDER BY id DESC", (status,))
+
+    @api.post("/v1/incidents/{incident_id}/resolve", tags=["side effects"])
+    def resolve_incident(incident_id: int, body: Decision) -> dict:
+        row = app.db.one("SELECT * FROM incidents WHERE id = ?", (incident_id,))
+        if row is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        detail = {**row["detail"], "resolved_by": body.reviewer, "resolution": body.note}
+        app.db.update("incidents", "id", incident_id, {"status": "resolved", "detail": detail})
+        return app.db.one("SELECT * FROM incidents WHERE id = ?", (incident_id,))
 
     # ---- reference data (read-only) ---------------------------------------------
     @api.get("/v1/kb", tags=["knowledge base"])

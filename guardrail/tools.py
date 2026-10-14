@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import typing
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
@@ -98,11 +99,18 @@ class ToolSpec:
         return inspect.getdoc(self.fn) or self.name
 
 
-def _outbox(kb: KnowledgeBase, channel: str, recipient: str, subject: str, body: str) -> str:
-    outbox_id = new_id("msg")
+# The action being committed. Guardrail.commit sets it so a tool's outbox entries are linked to the
+# decision that authorized them (the reconciler checks that link).
+CURRENT_ACTION: ContextVar[str | None] = ContextVar("current_action", default=None)
+
+
+def _outbox(kb: KnowledgeBase, channel: str, recipient: str, subject: str, body: str, payload: dict) -> str:
+    """Record an external side effect. It is delivered only after this transaction commits."""
+    outbox_id = new_id("ref" if channel == "refund" else "msg")
     kb.db.insert(
         "outbox",
-        {"id": outbox_id, "ts": now(), "channel": channel, "recipient": recipient, "subject": subject, "body": body},
+        {"id": outbox_id, "ts": now(), "channel": channel, "recipient": recipient, "subject": subject, "body": body,
+         "action_id": CURRENT_ACTION.get(), "payload": payload, "status": "pending"},
     )
     return outbox_id
 
@@ -110,7 +118,7 @@ def _outbox(kb: KnowledgeBase, channel: str, recipient: str, subject: str, body:
 def _outbox_written(kb: KnowledgeBase, args: dict, before: Any, output: Any) -> str | None:
     row = kb.db.one("SELECT * FROM outbox WHERE id = ?", (output["outbox_id"],))
     expected = args.get("body", args.get("message"))
-    if row is None or row["body"] != expected:
+    if row is None or row["body"] != expected or row["status"] != "pending":
         return "the message stored in the outbox is not the message that was verified"
     return None
 
@@ -120,19 +128,23 @@ def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
 
     def issue_refund(order_id: str, customer_id: str, amount: float, reason: str) -> dict:
         """Refund `amount` USD on an order to the customer who placed it."""
+        # Reserve the amount on the order and queue the payment; the provider is paid after commit.
         kb.record_refund(order_id, amount)
-        return {"status": "refunded", "order_id": order_id, "amount": amount}
+        outbox_id = _outbox(kb, "refund", customer_id, order_id, f"Refund ${amount:.2f} on {order_id}: {reason}",
+                            {"order_id": order_id, "customer_id": customer_id, "amount": amount})
+        return {"status": "refunded", "order_id": order_id, "amount": amount, "outbox_id": outbox_id,
+                "settlement": "queued for the payment provider"}
 
     def send_email(to: str, subject: str, body: str) -> dict:
         """Send an email to a customer or staff member."""
-        outbox_id = _outbox(kb, "email", to, subject, body)
+        outbox_id = _outbox(kb, "email", to, subject, body, {"to": to, "subject": subject, "body": body})
         return {"status": "queued", "outbox_id": outbox_id, "to": to}
 
     def answer_customer(customer_id: str, message: str, citations: list[Citation]) -> dict:
         """Reply to the customer in chat. Any policy statement must cite the policy_id and quote
         its text verbatim (use search_policies to get the exact wording)."""
-        outbox_id = _outbox(kb, "chat", customer_id, "", message)
-        return {"status": "delivered", "outbox_id": outbox_id}
+        outbox_id = _outbox(kb, "chat", customer_id, "", message, {"customer_id": customer_id, "message": message})
+        return {"status": "queued", "outbox_id": outbox_id}
 
     def update_inventory(sku: str, delta: int, reason: str) -> dict:
         """Adjust on-hand stock for a SKU by `delta` units (negative to remove)."""
@@ -169,6 +181,10 @@ def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
             return f"refunded total moved from {before} to {order['refunded']}, expected +{args['amount']}"
         if order["refunded"] > order["total"] + 0.005:
             return "refunded total exceeds the order total"
+        intent = kb_.db.one("SELECT * FROM outbox WHERE id = ?", (output["outbox_id"],))
+        if intent is None or intent["payload"] != {"order_id": args["order_id"], "customer_id": args["customer_id"],
+                                                   "amount": args["amount"]}:
+            return "the queued payment does not match the verified refund"
         return None
 
     def stock_snapshot(kb_: KnowledgeBase, args: dict) -> int:

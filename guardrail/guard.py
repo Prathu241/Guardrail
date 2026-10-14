@@ -36,7 +36,7 @@ from .models import (
 from .reviewers import ReviewRequest
 from .risk import RiskRouter, assess_risk, router_for
 from .store import Database
-from .tools import PostconditionError, ToolSpec, make_tools
+from .tools import CURRENT_ACTION, PostconditionError, ToolSpec, make_tools
 
 
 class Guardrail:
@@ -174,7 +174,11 @@ class Guardrail:
                     self.audit.overrule(overruled)
                     return ExecutionResult(overruled, executed=False)
                 before = spec.snapshot(self.kb, action.args) if spec.snapshot else None
-                output = spec.fn(**action.args)
+                token = CURRENT_ACTION.set(action.id)
+                try:
+                    output = spec.fn(**action.args)
+                finally:
+                    CURRENT_ACTION.reset(token)
                 if spec.postcondition and (problem := spec.postcondition(self.kb, action.args, before, output)):
                     raise PostconditionError(problem)  # rolls the write back
                 self.audit.mark_executed(action.id, output)

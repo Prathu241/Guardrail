@@ -2,7 +2,7 @@
 
 Tables
   system of record   meta, customers, orders, products, policies, staff
-  side effects       outbox (emails and chat replies the tools sent)
+  side effects       outbox (refunds, emails and chat replies, delivered after commit), incidents
   guardrail state    conversations, audit, approvals, idempotency (sidecar request keys)
 
 SQLite keeps the project dependency-free and runnable anywhere; every query goes through
@@ -38,7 +38,15 @@ CREATE TABLE IF NOT EXISTS policies  (id TEXT PRIMARY KEY, title TEXT NOT NULL, 
 
 CREATE TABLE IF NOT EXISTS outbox (
     id TEXT PRIMARY KEY, ts TEXT NOT NULL, channel TEXT NOT NULL, recipient TEXT NOT NULL,
-    subject TEXT NOT NULL, body TEXT NOT NULL);
+    subject TEXT NOT NULL, body TEXT NOT NULL,
+    action_id TEXT, payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT, claimed_at TEXT, provider_ref TEXT, last_error TEXT, sent_at TEXT);
+
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,
+    detail TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+    UNIQUE (kind, ref));
 
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY, customer_id TEXT, status TEXT NOT NULL,
@@ -101,6 +109,15 @@ CREATE TABLE IF NOT EXISTS idempotency (
 # Columns added after a table first shipped: (table, column, definition). Applied to existing
 # databases on open, so an older guardrail.db keeps working after an upgrade.
 MIGRATIONS = [
+    ("outbox", "action_id", "TEXT"),
+    ("outbox", "payload", "TEXT"),
+    ("outbox", "status", "TEXT NOT NULL DEFAULT 'legacy'"),  # written before delivery existed
+    ("outbox", "attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("outbox", "next_attempt_at", "TEXT"),
+    ("outbox", "claimed_at", "TEXT"),
+    ("outbox", "provider_ref", "TEXT"),
+    ("outbox", "last_error", "TEXT"),
+    ("outbox", "sent_at", "TEXT"),
     ("audit", "executed_at", "TEXT"),
     ("approvals", "waives", "TEXT NOT NULL DEFAULT '[]'"),
     ("approvals", "revoked_by", "TEXT"),
@@ -110,7 +127,7 @@ MIGRATIONS = [
 
 JSON_COLUMNS = {
     "items", "params", "args", "route", "reasons", "warnings", "checks", "reviews", "output", "context", "result",
-    "waives", "response",
+    "waives", "response", "payload", "detail",
 }
 
 
@@ -157,6 +174,7 @@ class Database:
             existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS outbox_status ON outbox(status)")
 
     @classmethod
     def seeded(cls, path: str | Path = ":memory:", seed_dir: str | Path = SEED_DIR) -> Database:
@@ -232,6 +250,6 @@ class Database:
     def reset_state(self) -> None:
         """Forget conversations, audit and approvals; reseed the system of record."""
         with self.transaction():
-            for table in ("audit", "approvals", "conversations", "outbox", "idempotency"):
+            for table in ("audit", "approvals", "conversations", "outbox", "idempotency", "incidents"):
                 self.run(f"DELETE FROM {table}")
             self.seed()

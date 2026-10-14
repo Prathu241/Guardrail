@@ -29,6 +29,11 @@ class Settings:
     block_confidence: float = 0.7
     # A human approval is valid for this long after the action was escalated
     approval_ttl_hours: float = 24.0
+    # Delivery of refunds and messages to the providers (after commit). 0 disables the background worker.
+    worker_interval: float = 2.0
+    reconcile_interval: float = 60.0
+    outbox_max_attempts: int = 5
+    outbox_backoff_seconds: float = 2.0
     # Chaos testing: probability that the agent's tool call is corrupted before the guard sees it
     fault_rate: float = 0.0
     fault_seed: int = 7

@@ -158,7 +158,7 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
       <div class="panel"><h2>Orders</h2><div id="r-orders" class="tablewrap"></div></div>
       <div class="panel"><h2>Products</h2><div id="r-products" class="tablewrap"></div></div>
     </div>
-    <div class="panel" style="margin-top:16px"><h2>Outbox (messages the agent actually sent)</h2><div id="r-outbox" class="tablewrap"></div></div>
+    <div class="panel" style="margin-top:16px"><h2>Outbox (refunds and messages, delivered to the providers after commit)</h2><div id="r-outbox" class="tablewrap"></div></div>
   </section>
 </main>
 
@@ -360,8 +360,11 @@ async function loadRecords() {
   $("#r-orders").replaceChildren(table(["Order", "Customer", "Status", "Delivered", "Total", "Refunded"],
     kb.orders.map((o) => [o.id, o.customer_id, o.status, o.delivered_on || "—", `$${o.total.toFixed(2)}`, `$${o.refunded.toFixed(2)}`])));
   $("#r-products").replaceChildren(table(["SKU", "Name", "Price", "Stock"], kb.products.map((p) => [p.sku, p.name, `$${p.price.toFixed(2)}`, p.stock])));
-  $("#r-outbox").replaceChildren(outbox.length ? table(["Time", "Channel", "To", "Subject", "Body"],
-    outbox.map((o) => [new Date(o.ts).toLocaleTimeString(), o.channel, o.recipient, o.subject, o.body])) : el("div", { class: "small" }, "Nothing sent yet."));
+  const delivery = { sent: "allow", pending: "pending", sending: "pending", failed: "block", compensated: "block" };
+  $("#r-outbox").replaceChildren(outbox.length ? table(["Time", "Channel", "To", "Subject", "Body", "Delivery"],
+    outbox.map((o) => [new Date(o.ts).toLocaleTimeString(), o.channel, o.recipient, o.subject, o.body,
+      el("span", {}, pill(delivery[o.status] || "pending", o.status), o.provider_ref ? el("div", { class: "small" }, o.provider_ref) : "",
+        o.last_error ? el("div", { class: "small" }, o.last_error) : "")])) : el("div", { class: "small" }, "Nothing sent yet."));
 }
 
 function table(headers, rows) {
