@@ -207,42 +207,53 @@ def cmd_chaos(app: App, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    def global_options(parser: argparse.ArgumentParser, default=None) -> None:
+        parser.add_argument("--db", default=default,
+                            help="SQLite path (default: $GUARDRAIL_DB_PATH or guardrail.db; ':memory:' for scratch)")
+        parser.add_argument("--reviewer", choices=["heuristic", "claude"], default=default)
+        parser.add_argument("--agent", choices=["rules", "claude"], default=default)
+        parser.add_argument("--fault-rate", type=float, default=default,
+                            help="probability of injecting a hallucination per agent turn")
+
     ap = argparse.ArgumentParser(prog="guardrail", description="Pre-execution guardrails for agent tool calls.")
-    ap.add_argument("--db", help="SQLite path (default: $GUARDRAIL_DB_PATH or guardrail.db; ':memory:' for scratch)")
-    ap.add_argument("--reviewer", choices=["heuristic", "claude"])
-    ap.add_argument("--agent", choices=["rules", "claude"])
-    ap.add_argument("--fault-rate", type=float, help="probability of injecting a hallucination per agent turn")
+    global_options(ap)
+    # The same options are accepted after the command too ("guardrail init-db --db x.db").
+    common = argparse.ArgumentParser(add_help=False)
+    global_options(common, default=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("serve", help="run the HTTP API and dashboard")
+    def command(name: str, **kw) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[common], **kw)
+
+    p = command("serve", help="run the HTTP API and dashboard")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
-    p = sub.add_parser("init-db", help="create/seed the database")
+    p = command("init-db", help="create/seed the database")
     p.add_argument("--reset", action="store_true", help="reseed records and clear all guardrail state")
-    p = sub.add_parser("ask", help="send one message to the guarded agent")
+    p = command("ask", help="send one message to the guarded agent")
     p.add_argument("message")
     p.add_argument("--customer", help="authenticated customer id (omit for internal operations)")
-    p = sub.add_parser("chat", help="interactive conversation with the guarded agent")
+    p = command("chat", help="interactive conversation with the guarded agent")
     p.add_argument("--customer")
     p.add_argument("--reviewer-name", dest="reviewer_name", default="cli-reviewer")
-    p = sub.add_parser("approvals", help="list, decide or revoke escalated actions")
+    p = command("approvals", help="list, decide or revoke escalated actions")
     p.add_argument("action", choices=["list", "approve", "reject", "revoke"])
     p.add_argument("id", nargs="?")
     p.add_argument("--status", default="pending", help="pending | approved | rejected | revoked | expired | all")
     p.add_argument("--reviewer-name", dest="reviewer_name", default="cli-reviewer")
     p.add_argument("--note", default="")
-    p = sub.add_parser("audit", help="print the audit log")
+    p = command("audit", help="print the audit log")
     p.add_argument("--conversation")
     p.add_argument("--decision", choices=["allow", "block", "escalate"])
     p.add_argument("--limit", type=int, default=50)
-    sub.add_parser("metrics", help="print aggregate metrics")
-    p = sub.add_parser("outbox", help="list, deliver or reconcile external side effects")
+    command("metrics", help="print aggregate metrics")
+    p = command("outbox", help="list, deliver or reconcile external side effects")
     p.add_argument("action", nargs="?", default="list", choices=["list", "dispatch", "reconcile"])
-    sub.add_parser("incidents", help="list open incidents (failed deliveries, reconciliation mismatches)")
-    p = sub.add_parser("chaos", help="run sample tickets with fault injection and report the catch rate")
+    command("incidents", help="list open incidents (failed deliveries, reconciliation mismatches)")
+    p = command("chaos", help="run sample tickets with fault injection and report the catch rate")
     p.add_argument("--rounds", type=int, default=3)
-    sub.add_parser("demo", help="scripted end-to-end demo (in-memory, offline)")
-    p = sub.add_parser("redteam", help="run the red-team suite")
+    command("demo", help="scripted end-to-end demo (in-memory, offline)")
+    p = command("redteam", help="run the red-team suite")
     p.add_argument("--mode", default="routed")
     p.add_argument("--ablation", action="store_true")
 
@@ -256,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return redteam_main(["--mode", args.mode] + (["--ablation"] if args.ablation else [])
                             + (["--reviewer", args.reviewer] if args.reviewer else []) + rest)
+    if rest:
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
     if args.command == "approvals" and args.action != "list" and not args.id:
         ap.error(f"approvals {args.action} needs an approval id")
     if args.command == "chaos":  # a throwaway database, every turn corrupted unless told otherwise

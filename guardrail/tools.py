@@ -17,9 +17,10 @@ import typing
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, create_model
+from typing_extensions import TypedDict  # pydantic needs this TypedDict on Python < 3.12
 
 from . import checks as c
 from .knowledge_base import KnowledgeBase
