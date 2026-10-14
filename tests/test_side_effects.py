@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -124,14 +124,14 @@ def test_backoff_delays_the_retry(env):
     env["messages"].faults.append("unavailable")
     assert dispatcher.run_once()["retrying"] == 1
     assert dispatcher.run_once() == {"sent": 0, "retrying": 0, "failed": 0, "recovered": 0}  # not due yet
-    assert _outbox(env["db"])[0]["next_attempt_at"] > datetime.now(timezone.utc).isoformat()
+    assert _outbox(env["db"])[0]["next_attempt_at"] > datetime.now(UTC).isoformat()
 
 
 @pytest.mark.parametrize("provider_acted", [True, False])
 def test_worker_dying_mid_delivery_is_recovered(env, provider_acted):
     _refund(env["guard"])
     [row] = _outbox(env["db"])
-    stale = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="seconds")
+    stale = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
     env["db"].update("outbox", "id", row["id"], {"status": "sending", "attempts": 1, "claimed_at": stale})
     if provider_acted:
         env["payments"].send(row["id"], "refund", row["payload"])
@@ -252,3 +252,14 @@ def test_operator_endpoints(tmp_path):
     resolved = client.post(f"/v1/incidents/{incident['id']}/resolve",
                            json={"reviewer": "dana.ops", "note": "paid by bank transfer"}).json()
     assert resolved["status"] == "resolved" and client.get("/v1/incidents").json() == []
+
+
+def test_development_reset_leaves_books_that_reconcile(tmp_path):
+    app = build_app(Settings(db_path=str(tmp_path / "g.db")))
+    conv = app.conversations.start(LANTERN, "C-1001")
+    app.dispatcher.run_once()
+    app.reset()
+    assert app.db.all("SELECT * FROM outbox") == [] and app.providers["refund"].records() == []
+    assert app.reconciler.run()["findings"] == []
+    assert app.conversations.graph.get_state(app.conversations._config(conv["id"])).values == {}
+    assert app.guard.kb.order("O-5001")["refunded"] == 0

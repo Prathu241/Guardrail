@@ -6,3 +6,6 @@
 *.db
 *.db.*
 tests
+build
+*.egg-info
+redteam/results/latest.*

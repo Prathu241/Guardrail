@@ -34,6 +34,15 @@ class App:
     dispatcher: Dispatcher
     reconciler: Reconciler
 
+    def reset(self) -> None:
+        """Development reset: reseed the records and forget conversations, their checkpoints, the audit
+        log, approvals, the outbox and the simulated providers' ledgers (so they still reconcile)."""
+        for row in self.db.all("SELECT id FROM conversations"):
+            self.conversations.graph.checkpointer.delete_thread(row["id"])
+        self.db.reset_state()
+        for provider in {id(p): p for p in self.providers.values()}.values():
+            provider.clear()
+
     def worker(self) -> BackgroundWorker:
         """Delivers the outbox, recovers interrupted runs and reconciles, on an interval."""
         return BackgroundWorker(self.dispatcher, self.reconciler, self.conversations.recover_incomplete,

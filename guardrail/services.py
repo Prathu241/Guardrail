@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -144,7 +144,7 @@ class ConversationService:
             row = self._row(conversation_id)
             status = row["status"]
             if status == "running":
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds()
+                age = (datetime.now(UTC) - datetime.fromisoformat(row["updated_at"])).total_seconds()
                 if age < stale_after:
                     raise ConversationError("conversation is busy with another request")
             elif status not in allowed:

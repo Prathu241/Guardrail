@@ -29,7 +29,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from .store import Database, now
@@ -107,6 +107,11 @@ class SimulatedProvider:
         rows = self._conn.execute("SELECT * FROM records ORDER BY ts, rowid").fetchall()
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
 
+    def clear(self) -> None:
+        """Development reset only: forget every simulated record."""
+        with self._lock:
+            self._conn.execute("DELETE FROM records")
+
     def record_external(self, key: str, channel: str, payload: dict) -> None:
         """Test hook: a transaction made directly at the provider, bypassing the guardrail."""
         self._conn.execute("INSERT INTO records VALUES (?, ?, ?, ?, ?)",
@@ -130,7 +135,7 @@ def open_incident(db: Database, kind: str, ref: str, detail: dict) -> bool:
 
 
 def _later(seconds: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 @dataclass
@@ -197,7 +202,7 @@ class Dispatcher:
 
     def _recover_stale(self) -> int:
         """Entries left "sending" by a worker that died mid-call: the provider knows if it acted."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.lease_seconds)).isoformat(timespec="seconds")
+        cutoff = (datetime.now(UTC) - timedelta(seconds=self.lease_seconds)).isoformat(timespec="seconds")
         recovered = 0
         for row in self.db.all("SELECT * FROM outbox WHERE status = 'sending' AND claimed_at < ?", (cutoff,)):
             record = self.providers[row["channel"]].lookup(row["id"])
@@ -299,7 +304,7 @@ class BackgroundWorker:
         while not self._stop.wait(self.interval):
             for job in (self.dispatcher.run_once, self.recover):
                 self._safely(job)
-            elapsed = datetime.now(timezone.utc).timestamp()
+            elapsed = datetime.now(UTC).timestamp()
             if self.reconcile_every and elapsed - last_reconcile >= self.reconcile_every:
                 self._safely(self.reconciler.run)
                 last_reconcile = elapsed

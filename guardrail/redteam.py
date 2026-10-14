@@ -18,7 +18,7 @@ import platform
 import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Settings
@@ -145,7 +145,7 @@ def record(reviewer: str = "heuristic", path: Path = CASES_PATH, repeats: int = 
 
     cases = load_cases(path)
     out: dict = {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "environment": {"guardrail": __version__, "git_commit": _git_commit(), "python": platform.python_version(),
                         "platform": platform.platform(), "reviewer": reviewer},
         "suite": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "cases": len(cases),

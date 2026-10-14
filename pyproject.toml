@@ -7,7 +7,7 @@ name = "guardrail"
 version = "0.3.0"
 description = "Pre-execution guardrails that verify agent tool calls against a system of record"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.6",
   "anthropic>=1.13",

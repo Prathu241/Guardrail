@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
@@ -12,7 +12,7 @@ def _action_id() -> str:
     return f"act-{uuid.uuid4().hex[:12]}"
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """Result of a single deterministic check."""
 
     PASS = "pass"
@@ -28,7 +28,7 @@ HUMAN_OUTCOMES = (Outcome.UNVERIFIABLE, Outcome.NEEDS_APPROVAL)
 STOPPING_OUTCOMES = (Outcome.FAIL, *HUMAN_OUTCOMES)
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "allow"
     ESCALATE = "escalate"  # park for a human; do not execute
     BLOCK = "block"

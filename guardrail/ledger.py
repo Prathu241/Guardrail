@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .models import HUMAN_OUTCOMES, AgentContext, ProposedAction, Verdict
@@ -75,7 +75,7 @@ class AuditLog:
         return [r["tool"] for r in rows]
 
     def refunded_by_customer(self, hours: int = 24) -> dict[str, float]:
-        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+        since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat(timespec="seconds")
         rows = self.db.all(
             "SELECT json_extract(args, '$.customer_id') AS cid, SUM(json_extract(args, '$.amount')) AS total "
             "FROM audit WHERE tool = 'issue_refund' AND executed = 1 AND COALESCE(executed_at, ts) >= ? GROUP BY cid",
@@ -174,7 +174,7 @@ class ApprovalQueue:
         return self.db.all(sql, tuple(params))
 
     def is_expired(self, row: dict) -> bool:
-        return datetime.fromisoformat(row["created_at"]) + self.ttl < datetime.now(timezone.utc)
+        return datetime.fromisoformat(row["created_at"]) + self.ttl < datetime.now(UTC)
 
     def executed(self, row: dict) -> bool:
         audit = self.db.one("SELECT executed FROM audit WHERE action_id = ?", (row["action_id"],))

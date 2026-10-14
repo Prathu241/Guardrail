@@ -44,5 +44,10 @@ serve:
 docker:
 	docker compose up --build
 
+# Build the image and run the end-to-end container smoke test (what CI's docker job runs)
+docker-smoke:
+	docker build -t guardrail:test .
+	IMAGE=guardrail:test scripts/docker_smoke.sh
+
 # Everything CI runs
 check: lint test redteam chaos

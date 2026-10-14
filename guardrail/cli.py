@@ -70,8 +70,9 @@ def cmd_serve(app: App, args) -> int:
 
 def cmd_init_db(app: App, args) -> int:
     if args.reset:
-        app.db.reset_state()
-        print(f"reset {app.settings.db_path}: reseeded records, cleared audit/approvals/conversations")
+        app.reset()
+        print(f"reset {app.settings.db_path}: reseeded records; cleared conversations, audit, approvals, outbox "
+              "and simulated provider ledgers")
     else:
         print(f"{app.settings.db_path} ready ({len(app.guard.kb.all_orders())} orders)")
     return 0

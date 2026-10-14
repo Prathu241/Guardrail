@@ -11,7 +11,7 @@ import sys
 import textwrap
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -241,7 +241,7 @@ def test_executed_approval_cannot_be_revoked(db_path):
 
 def test_stale_approvals_expire(db_path):
     guard = _guard(db_path)
-    old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(timespec="seconds")
+    old = (datetime.now(UTC) - timedelta(hours=25)).isoformat(timespec="seconds")
     pending = guard.execute(*_refund("O-5005", "C-1002", 549.0, KAYAK))
     guard.db.update("approvals", "id", pending.approval_id, {"created_at": old})
     with pytest.raises(ApprovalError, match="expired"):
