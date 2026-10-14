@@ -34,6 +34,7 @@ guardrail = ["data/kb/*.json", "api/static/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning:starlette.*"]
+markers = ["live: calls the real Anthropic API (skipped unless ANTHROPIC_API_KEY is set)"]
 
 [tool.ruff]
 line-length = 120

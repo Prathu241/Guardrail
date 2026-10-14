@@ -86,3 +86,21 @@ def test_unverifiable_is_never_auto_executed_but_a_human_can_approve_it(app):
     assert app.guard.kb.order("O-5001")["refunded"] == 0
     app.approvals.decide(r.approval_id, True, "morgan.lee", "agreed a $30 goodwill refund by phone")
     assert app.guard.kb.order("O-5001")["refunded"] == 30.0
+
+
+def test_malformed_agent_tool_call_is_blocked_on_the_record():
+    from langchain_core.messages import AIMessage
+
+    from guardrail.agent.agents import ScriptedModel
+    from guardrail.app import build_app
+    from guardrail.config import Settings
+
+    bad = AIMessage("", invalid_tool_calls=[{"type": "invalid_tool_call", "id": "call_bad", "name": "issue_refund",
+                                             "args": '{"order_id": "O-50', "error": "truncated JSON"}])
+    app = build_app(Settings(db_path=":memory:"), model=ScriptedModel([bad]))
+    conv = app.conversations.start("Refund my lantern from O-5001, it arrived cracked.", "C-1001")
+    [entry] = conv["guard_log"]
+    assert entry["decision"] == "block" and not entry["executed"]
+    assert any("__malformed_arguments__" in r for r in entry["reasons"])
+    tool_msgs = [m for m in conv["messages"] if m["role"] == "tool"]
+    assert tool_msgs and tool_msgs[0]["tool_call_id"] == "call_bad"

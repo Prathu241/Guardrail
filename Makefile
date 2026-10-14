@@ -1,4 +1,4 @@
-.PHONY: install test lint redteam demo chaos serve docker check
+.PHONY: install test lint redteam demo chaos serve docker check live
 
 install:
 	pip install -e ".[dev]"
@@ -8,6 +8,11 @@ lint:
 
 test:
 	python -m pytest -q
+
+# Real Claude reviewers and agent (needs ANTHROPIC_API_KEY), then the red-team suite on Claude reviewers
+live:
+	python -m pytest -m live -v
+	python -m guardrail redteam --reviewer claude
 
 redteam:
 	python -m guardrail redteam --ablation

@@ -33,7 +33,8 @@ class App:
 def agent_model(settings: Settings, guard: Guardrail, base: Any = None) -> Any:
     if base is None:
         if settings.agent == "claude":
-            base = claude_agent(tool_schemas(guard), settings.agent_model)
+            base = claude_agent(tool_schemas(guard), settings.agent_model,
+                                timeout=settings.agent_timeout, max_retries=settings.agent_max_retries)
         elif settings.agent == "rules":
             base = RuleBasedAgent()
         else:

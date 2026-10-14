@@ -52,6 +52,22 @@ def system_prompt(customer_id: str | None) -> str:
     return SYSTEM_PROMPT.format(identity=identity)
 
 
+AGENT_UNAVAILABLE = ("Sorry, I couldn't finish handling this just now. Nothing has been changed on your "
+                     "account; please try again shortly.")
+
+
+def _calls(ai: AIMessage) -> list[dict]:
+    """Every tool call the model attempted. A malformed one (unparseable arguments) is kept so the
+    guard can block it on the record and the agent gets a tool result for it, instead of being
+    silently dropped."""
+    malformed = [
+        {"id": c.get("id") or f"invalid_{i}", "name": c.get("name") or "<missing>",
+         "args": {"__malformed_arguments__": str(c.get("args"))[:500]}}
+        for i, c in enumerate(ai.invalid_tool_calls)
+    ]
+    return [*ai.tool_calls, *malformed]
+
+
 class AgentState(MessagesState):
     conversation_id: str
     customer_id: str | None
@@ -90,14 +106,19 @@ def build_agent_graph(model: Any, guard: Guardrail, checkpointer=None):
 
     def agent(state: AgentState) -> dict:
         prompt = SystemMessage(system_prompt(state.get("customer_id")))
-        return {"messages": [model.invoke([prompt, *state["messages"]])]}
+        try:
+            return {"messages": [model.invoke([prompt, *state["messages"]])]}
+        except Exception as e:  # timeout, outage, bad response: end the turn, change nothing
+            return {"messages": [AIMessage(
+                AGENT_UNAVAILABLE, response_metadata={"agent_error": f"{type(e).__name__}: {e}"[:500]},
+            )]}
 
     def verify(state: AgentState) -> dict:
         ai: AIMessage = state["messages"][-1]
         ctx = _context(state)
         faults = ai.response_metadata.get("injected_faults", {})
         pending = []
-        for call in ai.tool_calls:
+        for call in _calls(ai):
             verdict = guard.evaluate(
                 ProposedAction(call["name"], call["args"], rationale=ai.text), ctx, faults.get(call["id"])
             )
@@ -169,7 +190,7 @@ def build_agent_graph(model: Any, guard: Guardrail, checkpointer=None):
 
     def after_agent(state: AgentState) -> str:
         last = state["messages"][-1]
-        return "verify" if isinstance(last, AIMessage) and last.tool_calls else END
+        return "verify" if isinstance(last, AIMessage) and _calls(last) else END
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent)

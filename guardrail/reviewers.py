@@ -14,6 +14,7 @@ Two implementations share one interface:
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -280,6 +281,34 @@ def _first_text(content) -> str:
     return next(b.text for b in content if b.type == "text")
 
 
+class MalformedReview(ValueError):
+    pass
+
+
+def parse_review(text: str) -> tuple[bool, float, list[str], list[str]]:
+    """Strictly validate a reviewer's JSON. Anything off-schema is malformed: no coercion, so
+    "false" (a string), NaN, 1.7 or a bare string never turn into a verdict."""
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise MalformedReview(f"not JSON ({e})") from e
+    if not isinstance(data, dict):
+        raise MalformedReview("not a JSON object")
+    missing = {"grounded", "confidence", "concerns", "evidence"} - data.keys()
+    if missing:
+        raise MalformedReview(f"missing {sorted(missing)}")
+    grounded, confidence = data["grounded"], data["confidence"]
+    if not isinstance(grounded, bool):
+        raise MalformedReview("grounded is not a boolean")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) \
+            or not 0.0 <= confidence <= 1.0:
+        raise MalformedReview("confidence is not a number in [0, 1]")
+    for key in ("concerns", "evidence"):
+        if not isinstance(data[key], list) or not all(isinstance(x, str) for x in data[key]):
+            raise MalformedReview(f"{key} is not a list of strings")
+    return grounded, float(confidence), data["concerns"], data["evidence"]
+
+
 @dataclass
 class ClaudeReviewer:
     """Grounding review by Claude. Fails closed: errors and refusals escalate."""
@@ -290,12 +319,14 @@ class ClaudeReviewer:
     cost: float
     use_fallbacks: bool = False
     client: object = None
+    timeout: float = 30.0
+    max_retries: int = 2
 
     def __post_init__(self) -> None:
         if self.client is None:
             import anthropic
 
-            self.client = anthropic.Anthropic()
+            self.client = anthropic.Anthropic(timeout=self.timeout, max_retries=self.max_retries)
 
     @property
     def name(self) -> str:
@@ -317,6 +348,9 @@ class ClaudeReviewer:
             "Is the proposed action grounded?"
         )
 
+    def _closed(self, why: str, evidence: list[str] | None = None) -> ReviewResult:
+        return ReviewResult(self.name, False, 0.0, [why], self.cost, evidence or [])
+
     def review(self, req: ReviewRequest) -> ReviewResult:
         import anthropic
 
@@ -334,23 +368,26 @@ class ClaudeReviewer:
                 )
             else:
                 response = self.client.messages.create(**params)
+        except anthropic.APITimeoutError:
+            return self._closed("reviewer timed out; failing closed")
         except anthropic.APIError as e:
-            return ReviewResult(self.name, False, 0.0, [f"reviewer unavailable ({type(e).__name__}); failing closed"], self.cost)
+            return self._closed(f"reviewer unavailable ({type(e).__name__}); failing closed")
+        except Exception as e:  # any failure to get a verdict means "not verified"
+            return self._closed(f"reviewer failed ({type(e).__name__}); failing closed")
 
-        if response.stop_reason == "refusal":
-            return ReviewResult(self.name, False, 0.0, ["reviewer declined to assess; needs a human"], self.cost)
-        if response.stop_reason == "max_tokens":
-            return ReviewResult(self.name, False, 0.0, ["reviewer output truncated; failing closed"], self.cost)
+        stop = getattr(response, "stop_reason", None)
+        if stop == "refusal":
+            return self._closed("reviewer declined to assess; needs a human")
+        if stop == "max_tokens":
+            return self._closed("reviewer output truncated; failing closed")
         try:
-            data = json.loads(_first_text(response.content))
-            grounded, confidence = bool(data["grounded"]), max(0.0, min(1.0, float(data["confidence"])))
-            concerns, evidence = list(data["concerns"]), [str(e) for e in data["evidence"]]
-        except (StopIteration, ValueError, KeyError, TypeError):
-            return ReviewResult(self.name, False, 0.0, ["reviewer returned malformed output; failing closed"], self.cost)
+            grounded, confidence, concerns, evidence = parse_review(_first_text(response.content))
+        except (StopIteration, AttributeError, TypeError, MalformedReview) as e:
+            return self._closed(f"reviewer returned malformed output ({e or type(e).__name__}); failing closed")
         if grounded:
             problem = verify_evidence(evidence, req)
             if problem:  # never trust an approval whose evidence cannot be found
-                return ReviewResult(self.name, False, 0.0, [problem], self.cost, evidence)
+                return self._closed(problem, evidence)
         return ReviewResult(self.name, grounded, confidence, concerns, self.cost, evidence)
 
 
@@ -359,8 +396,11 @@ def claude_reviewers(
     fast_model: str = "claude-haiku-5-5",
     careful_model: str = "claude-opus-5-5",
     critical_model: str | None = "claude-sonnet-5-5",
+    timeout: float = 30.0,
+    max_retries: int = 2,
 ) -> tuple[ClaudeReviewer, ClaudeReviewer, ClaudeReviewer | None]:
-    fast = ClaudeReviewer(fast_model, effort="low", tier="fast", cost=FAST_COST, client=client)
+    fast = ClaudeReviewer(fast_model, effort="low", tier="fast", cost=FAST_COST, client=client, timeout=timeout,
+                          max_retries=max_retries)
     careful = ClaudeReviewer(
         careful_model, effort="high", tier="careful", cost=CAREFUL_COST, use_fallbacks=True, client=fast.client
     )
@@ -381,7 +421,8 @@ def reviewers_for(settings) -> tuple[Reviewer, Reviewer, Reviewer | None]:
     """(fast, careful, critical second opinion or None) for the configured backend."""
     if settings.reviewer == "claude":
         return claude_reviewers(fast_model=settings.fast_model, careful_model=settings.careful_model,
-                                critical_model=settings.critical_model or None)
+                                critical_model=settings.critical_model or None,
+                                timeout=settings.reviewer_timeout, max_retries=settings.reviewer_max_retries)
     if settings.reviewer == "heuristic":
         # Offline there is no second independent model; the critical tier is simply the careful one.
         return (*heuristic_reviewers(), None)

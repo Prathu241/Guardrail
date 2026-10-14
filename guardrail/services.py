@@ -34,6 +34,7 @@ def _message_view(m: AnyMessage) -> dict:
             "text": m.text,
             "tool_calls": [{"id": c["id"], "name": c["name"], "args": c["args"]} for c in m.tool_calls],
             "injected_faults": m.response_metadata.get("injected_faults", {}),
+            "agent_error": m.response_metadata.get("agent_error"),
         }
     return {"role": m.type, "text": str(m.content)}
 

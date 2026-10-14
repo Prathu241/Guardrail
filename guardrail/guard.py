@@ -96,9 +96,15 @@ class Guardrail:
     def _checks(self, spec: ToolSpec, action: ProposedAction, ctx: AgentContext,
                 session: Session | None = None) -> list[CheckResult]:
         session = session or self.session(ctx.conversation_id)
-        return [
-            r for check in (*GENERIC_CHECKS, *spec.checks) if (r := check(action, ctx, self.kb, session)) is not None
-        ]
+        results = []
+        for check in (*GENERIC_CHECKS, *spec.checks):
+            try:
+                r = check(action, ctx, self.kb, session)
+            except Exception as e:  # a check that cannot run has verified nothing
+                r = CheckResult(check.__name__, Outcome.FAIL, f"check crashed ({type(e).__name__}: {e}); blocking")
+            if r is not None:
+                results.append(r)
+        return results
 
     def _evaluate(self, action: ProposedAction, ctx: AgentContext) -> Verdict:
         spec, action, invalid = self._validate(action)
@@ -117,7 +123,12 @@ class Guardrail:
         if spec.read_only:
             return Verdict(action, Decision.ALLOW, results, risk)
 
-        outcome = self.router.route(ReviewRequest(action, ctx, results, risk, self.kb, session))
+        try:
+            outcome = self.router.route(ReviewRequest(action, ctx, results, risk, self.kb, session))
+        except Exception as e:  # a review that cannot complete is not a review: a human decides
+            failed = CheckResult("model_review", Outcome.UNVERIFIABLE,
+                                 f"model review could not complete ({type(e).__name__}); needs a human")
+            return Verdict(action, Decision.ESCALATE, [*results, failed], risk, caught_by="review-error")
         if outcome.grounded:
             return Verdict(action, Decision.ALLOW, results, risk, outcome.reviews)
         decision = Decision.BLOCK if outcome.confidence >= self.block_confidence else Decision.ESCALATE

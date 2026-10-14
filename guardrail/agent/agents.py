@@ -218,8 +218,10 @@ class ScriptedModel:
         return next(self._turns, AIMessage("Done."))
 
 
-def claude_agent(tools: list, model: str = "claude-opus-5-5"):
+def claude_agent(tools: list, model: str = "claude-opus-5-5", timeout: float = 120.0, max_retries: int = 2,
+                 **client_kwargs: Any):
     """A real tool-calling agent backed by Claude."""
     from langchain_anthropic import ChatAnthropic
 
-    return ChatAnthropic(model=model, max_tokens=16000).bind_tools(tools)
+    return ChatAnthropic(model=model, max_tokens=16000, default_request_timeout=timeout, max_retries=max_retries,
+                         **client_kwargs).bind_tools(tools)

@@ -17,6 +17,11 @@ class Settings:
     careful_model: str = "claude-opus-5-5"
     critical_model: str = "claude-sonnet-5-5"  # independent second opinion; "" disables it
     agent_model: str = "claude-opus-5-5"
+    # Claude call limits (seconds / retries). A reviewer that times out fails closed (-> human).
+    reviewer_timeout: float = 30.0
+    reviewer_max_retries: int = 2
+    agent_timeout: float = 120.0
+    agent_max_retries: int = 2
     # Routing and decision thresholds
     risk_threshold: float = 0.5
     cascade_below_confidence: float = 0.75
