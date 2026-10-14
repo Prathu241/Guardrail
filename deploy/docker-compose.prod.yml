@@ -1,0 +1,42 @@
+# Production deployment: Guardrail behind Caddy (automatic HTTPS), data on a named volume.
+#   cp deploy/.env.production.example deploy/.env.production   # then fill it in
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d --build
+services:
+  guardrail:
+    build: ..
+    image: guardrail:prod
+    env_file: .env.production
+    environment:
+      GUARDRAIL_ENV: production
+      GUARDRAIL_DB_PATH: /data/guardrail.db
+    volumes:
+      - guardrail-data:/data
+    expose:
+      - "8000"            # reachable only through the proxy
+    read_only: true       # everything it writes goes to /data
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  proxy:
+    image: caddy:2.8.4
+    depends_on:
+      guardrail:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env.production}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+volumes:
+  guardrail-data:
+  caddy-data:

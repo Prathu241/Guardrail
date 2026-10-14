@@ -12,3 +12,5 @@ dist/
 *.db-wal
 *.db-shm
 redteam/results/latest.*
+deploy/.env.production
+.env

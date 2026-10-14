@@ -8,6 +8,7 @@ import os
 import sys
 
 from .app import App, build_app
+from .auth import ConfigError
 from .config import Settings
 
 
@@ -110,6 +111,28 @@ def cmd_outbox(app: App, args) -> int:
         for o in app.db.all("SELECT * FROM outbox ORDER BY ts, rowid"):
             print(f"{o['id']}  {o['status']:<11} {o['channel']:<6} {o['recipient']:<22} attempts={o['attempts']} "
                   f"{o['provider_ref'] or ''} {o['last_error'] or ''}")
+    return 0
+
+
+def cmd_backup(app: App, args) -> int:
+    """Consistent copies of every database file, safe while the server is running."""
+    import sqlite3
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    src = Path(app.settings.db_path)
+    if app.settings.db_path == ":memory:":
+        print("nothing to back up: the database is in memory", file=sys.stderr)
+        return 1
+    dest = Path(args.dest) / datetime.now(UTC).strftime("guardrail-%Y%m%dT%H%M%SZ")
+    dest.mkdir(parents=True)
+    for path in [src, *sorted(src.parent.glob(src.name + ".*"))]:
+        if path.suffix in (".db-wal", ".db-shm") or path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
+        with sqlite3.connect(path) as source, sqlite3.connect(dest / path.name) as target:
+            source.backup(target)
+        print(f"backed up {path.name}")
+    print(f"backup written to {dest}")
     return 0
 
 
@@ -253,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     p = command("outbox", help="list, deliver or reconcile external side effects")
     p.add_argument("action", nargs="?", default="list", choices=["list", "dispatch", "reconcile"])
     command("incidents", help="list open incidents (failed deliveries, reconciliation mismatches)")
+    p = command("backup", help="write a consistent backup of every database file (safe while serving)")
+    p.add_argument("dest", help="directory to write the backup into")
     p = command("chaos", help="run sample tickets with fault injection and report the catch rate")
     p.add_argument("--rounds", type=int, default=3)
     command("demo", help="scripted end-to-end demo (in-memory, offline)")
@@ -279,10 +304,14 @@ def main(argv: list[str] | None = None) -> int:
         args.fault_rate = 1.0 if args.fault_rate is None else args.fault_rate
 
     settings = Settings.from_env(db_path=args.db, reviewer=args.reviewer, agent=args.agent, fault_rate=args.fault_rate)
-    app = build_app(settings)
+    try:
+        app = build_app(settings)
+    except ConfigError as e:
+        print(f"guardrail: {e}", file=sys.stderr)
+        return 2
     commands = {
         "serve": cmd_serve, "init-db": cmd_init_db, "ask": cmd_ask, "chat": cmd_chat, "approvals": cmd_approvals,
-        "outbox": cmd_outbox, "incidents": cmd_incidents,
+        "outbox": cmd_outbox, "incidents": cmd_incidents, "backup": cmd_backup,
         "audit": cmd_audit, "metrics": cmd_metrics, "chaos": cmd_chaos,
     }
     return commands[args.command](app, args)

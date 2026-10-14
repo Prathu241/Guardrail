@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .agent import FaultInjector, RuleBasedAgent, build_agent_graph, claude_agent, tool_schemas
+from .auth import Authenticator, check_production
 from .config import Settings
 from .guard import Guardrail
 from .outbox import BackgroundWorker, Dispatcher, Reconciler, simulated_providers
@@ -75,6 +77,9 @@ def _checkpointer(settings: Settings):
 
 def build_app(settings: Settings | None = None, model: Any = None) -> App:
     settings = settings or Settings.from_env()
+    for warning in check_production(settings):  # raises ConfigError on an unsafe production setup
+        logging.getLogger("guardrail").warning(warning)
+    Authenticator(settings.api_keys)  # validate the key list at start-up, not at the first request
     db = Database.seeded(settings.db_path)
     guard = Guardrail.from_settings(settings, db)
     graph = build_agent_graph(agent_model(settings, guard, model), guard, _checkpointer(settings))

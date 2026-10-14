@@ -57,6 +57,7 @@ approved away. Every check runs again inside the write transaction.
 | 17 | **Approvals that can't go stale** | an approval reused for something the approver never saw: it waives only the checks that asked for it, expires after 24 h, and can be revoked until the action runs (atomic with execution) | `ApprovalQueue.authorizes`, `revoke` |
 | 18 | **Outbox, compensation, reconciliation** | irreversible effects done wrong: nothing calls a provider inside a transaction; intents are delivered after commit with idempotency keys, refused refunds are compensated, and the providers' own records are reconciled with the outbox and audit log | `outbox.py` |
 | 19 | **Crash recovery** | half-finished runs: conversation claims in the database, synchronous checkpoints, and recovery that resumes a dead worker's run without re-executing | `ConversationService.recover_incomplete` |
+| 20 | **Access control** | anyone reaching the API approving refunds, or approving under someone else's name: API keys with roles, the decider recorded from the key, and production mode refusing to start without keys | `auth.py` |
 
 ## How the strength is measured
 
@@ -69,7 +70,7 @@ approved away. Every check runs again inside the write transaction.
 | Claude failure modes, through the real SDKs against a scripted API | 16 malformed or failed responses, timeouts and bounded retries all fail closed; full agent runs through `build_app` |
 | Races and crashes | daily cap under 8 racing threads and 6 racing processes; duplicate and racing commits execute once; revocation racing execution has one winner; real process kills mid-write, after commit, and mid-run |
 | Side effects | lost responses never pay twice; refused refunds are compensated; reconciliation detects money moved outside the guardrail, missing and altered provider records, and broken audit links |
-| Tests | 218, on Python 3.11, 3.12 and 3.13 from a fresh clone |
+| Tests | 228 (plus 11 live-API tests that need a key), on Python 3.11, 3.12 and 3.13, locally from a fresh clone and on GitHub Actions |
 
 A perfect score on attacks the builder wrote is necessary, not sufficient. Keep adding held-out
 attacks, ideally written by someone else, and run the suite with the Claude reviewers.

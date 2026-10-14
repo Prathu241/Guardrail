@@ -1,0 +1,15 @@
+# HTTPS for {$DOMAIN} with certificates from Let's Encrypt (or a local CA for "localhost").
+{$DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy guardrail:8000
+}

@@ -21,6 +21,8 @@ actually looked up, or it is blocked, or it goes to a human. Doubt never turns i
 
 - **[docs/HARDENING.md](docs/HARDENING.md)**: the 14 defence layers, how strength is measured,
   other approaches considered, and residual risks.
+- **[docs/GUIDE.md](docs/GUIDE.md)**: start here. What it is, whether it is ready for you, how to
+  integrate it, the API and configuration reference, how to deploy it, and the operations runbook.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: component, sequence, state and data
   diagrams; threat model; trade-offs.
 - **[docs/RESULTS.md](docs/RESULTS.md)**: the recorded security regression results for all four
@@ -42,8 +44,9 @@ actually looked up, or it is blocked, or it goes to a human. Doubt never turns i
 | **Side effects that can't be rolled back** | Refunds and messages are recorded in an outbox inside the transaction and delivered after commit with idempotency keys; retries, compensation for refused refunds, and reconciliation against the providers' records, with incidents for anything that doesn't match. |
 | **Persistence** | SQLite system of record + audit log + approval queue + outbox + incidents + LangGraph checkpoints, with schema migrations for existing databases. |
 | **Interfaces** | REST API (agent mode and sidecar mode for any other agent stack), web dashboard, `guardrail` CLI. |
-| **Assurance** | 218 tests, including the real Claude SDKs against a scripted API, thread and process races, real process crashes, and side-effect failures; a 92-case red-team suite (14 held-out cases) recorded for all four configurations against a committed baseline; chaos testing that injects hallucinations into live agent runs. CI runs all of it. |
-| **Ops** | Dockerfile + compose, health check, end-to-end container smoke test, background worker, `.env` config, metrics and incidents endpoints, GitHub Actions. |
+| **Assurance** | 228 tests, including the real Claude SDKs against a scripted API, thread and process races, real process crashes, and side-effect failures; a 92-case red-team suite (14 held-out cases) recorded for all four configurations against a committed baseline; chaos testing that injects hallucinations into live agent runs. CI runs all of it. |
+| **Access control** | API keys with roles (agent, approver, operator, admin); the approver recorded is whoever holds the key. Production mode refuses to start without keys, without the Claude reviewer, or on an in-memory database. |
+| **Ops** | Dockerfile + compose, production compose with automatic HTTPS (Caddy), `guardrail backup`, health check, end-to-end container smoke test, background worker, `.env` config, metrics and incidents endpoints, GitHub Actions. |
 
 ## Quick start
 

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import date
 
 
 @dataclass(frozen=True)
 class Settings:
+    # "production" refuses to start with an unsafe configuration (see auth.check_production)
+    env: str = "development"
+    # API keys: "name:role:secret,..." with role agent | approver | operator | admin. Empty = no auth
+    # (development only).
+    api_keys: str = field(default="", repr=False)
     db_path: str = "guardrail.db"
     # Which implementation backs each LLM role: "heuristic"/"rules" run offline, "claude" calls the API.
     reviewer: str = "heuristic"

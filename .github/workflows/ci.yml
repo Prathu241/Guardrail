@@ -44,3 +44,12 @@ jobs:
       - run: docker build -t guardrail:test .
       - name: Smoke test the container
         run: IMAGE=guardrail:test scripts/docker_smoke.sh
+      - name: Production compose file is valid
+        run: |
+          cp deploy/.env.production.example deploy/.env.production
+          docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production config --quiet
+      - name: Production mode refuses an unsafe configuration
+        run: |
+          if docker run --rm -e GUARDRAIL_ENV=production guardrail:test; then
+            echo "production mode started without API keys"; exit 1
+          fi
