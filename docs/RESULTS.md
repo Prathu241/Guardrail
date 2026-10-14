@@ -1,6 +1,6 @@
 # Security regression results
 
-Generated 2026-10-14T08:04:13+00:00 · guardrail 0.3.0 · commit `582c4ad` · Python 3.13.16 · reviewer backend `heuristic`
+Generated 2026-10-14T08:05:33+00:00 · guardrail 0.3.0 · commit `56607b8` · Python 3.13.16 · reviewer backend `heuristic`
 
 Suite `cases.json`: 92 cases (75 attacks, 17 legitimate controls), sha256 `e1b78c14a636f308…`. Held-out cases (written after the defences): round-2: 14.
 
