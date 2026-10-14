@@ -225,5 +225,6 @@ To add an action class, write `check(action, ctx, kb, session) -> CheckResult | 
 - SQLite suits a single host (several workers on it are fine); the multi-host path
   (Postgres) is described in the architecture doc.
 - The Docker image, compose file and container smoke test were run here, and the CI steps were
-  run from a fresh clone on Python 3.11, 3.12 and 3.13. GitHub Actions itself has not run the
-  workflow yet, because the branch could not be pushed.
+  run from a fresh clone on Python 3.11, 3.12 and 3.13. GitHub Actions runs the same workflow
+  (tests on all three versions, the security gate, chaos, Docker build and container smoke test)
+  and passed on its first run.
