@@ -263,3 +263,11 @@ def test_development_reset_leaves_books_that_reconcile(tmp_path):
     assert app.reconciler.run()["findings"] == []
     assert app.conversations.graph.get_state(app.conversations._config(conv["id"])).values == {}
     assert app.guard.kb.order("O-5001")["refunded"] == 0
+
+
+def test_provider_references_are_unique_across_instances(tmp_path):
+    from guardrail.outbox import SimulatedProvider
+
+    a, b = SimulatedProvider("payments", str(tmp_path / "p.db")), SimulatedProvider("payments", str(tmp_path / "p.db"))
+    refs = [a.send("k1", "refund", {}), b.send("k2", "refund", {}), a.send("k3", "refund", {}), b.send("k1", "refund", {})]
+    assert refs[:3] == ["payments_000001", "payments_000002", "payments_000003"] and refs[3] == refs[0]

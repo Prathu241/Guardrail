@@ -22,7 +22,6 @@ after that transaction commits does the dispatcher deliver it:
 
 from __future__ import annotations
 
-import itertools
 import json
 import sqlite3
 import threading
@@ -78,7 +77,6 @@ class SimulatedProvider:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, ref TEXT NOT NULL, "
                            "channel TEXT NOT NULL, payload TEXT NOT NULL, ts TEXT NOT NULL)")
-        self._refs = itertools.count(1 + self._conn.execute("SELECT COUNT(*) FROM records").fetchone()[0])
 
     def send(self, key: str, channel: str, payload: dict) -> str:
         with self._lock:
@@ -91,10 +89,11 @@ class SimulatedProvider:
             existing = self.lookup(key)
             if existing:  # idempotent: the same key never acts twice
                 ref = existing["ref"]
-            else:
-                ref = f"{self.name}_{next(self._refs):06d}"
-                self._conn.execute("INSERT INTO records VALUES (?, ?, ?, ?, ?)",
-                                   (key, ref, channel, json.dumps(payload, sort_keys=True), now()))
+            else:  # one statement, so references stay unique across instances sharing the ledger
+                self._conn.execute(
+                    "INSERT INTO records SELECT ?, ? || printf('%06d', COALESCE(MAX(rowid), 0) + 1), ?, ?, ? "
+                    "FROM records", (key, f"{self.name}_", channel, json.dumps(payload, sort_keys=True), now()))
+                ref = self.lookup(key)["ref"]
             if fault == "lost_response":
                 raise TransientProviderError(f"{self.name} timed out (the request may have succeeded)")
             return ref

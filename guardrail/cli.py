@@ -26,10 +26,13 @@ def print_guard_entry(e: dict) -> None:
     args = json.dumps(e["args"], ensure_ascii=False)
     args = args if len(args) <= 110 else args[:107] + "..."
     status = "executed" if e.get("executed") else "not executed"
+    approval = e.get("approval") or {}
+    label = e["decision"].upper() + (f" -> {approval['status'].upper()}" if approval.get("status") not in (None, "pending")
+                                     else "")
     fault = f" {C.PURPLE}[injected fault: {e['injected_fault']}]{C.END}" if e.get("injected_fault") else ""
     print(f"  {C.BOLD}{e['tool']}{C.END} {C.DIM}{args}{C.END}{fault}")
     risk = f"risk {e['risk']:.2f}" if e.get("risk") is not None else "risk n/a"
-    print(f"    {color}{C.BOLD}{e['decision'].upper()}{C.END} ({status})  {C.DIM}{risk} | {' -> '.join(e['route'])}{C.END}")
+    print(f"    {color}{C.BOLD}{label}{C.END} ({status})  {C.DIM}{risk} | {' -> '.join(e['route'])}{C.END}")
     if e.get("approval"):
         a = e["approval"]
         print(f"    {C.YELLOW}approval {a['id']}: {a['status']} by {a['decided_by']}{C.END}" + (f" - {a['note']}" if a.get("note") else ""))

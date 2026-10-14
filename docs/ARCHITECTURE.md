@@ -10,13 +10,14 @@ system, how its parts connect, and why it is built this way.
 3. [Request lifecycle](#3-request-lifecycle)
 4. [The decision pipeline](#4-the-decision-pipeline)
 5. [Human-in-the-loop approvals](#5-human-in-the-loop-approvals)
-6. [Commit safety](#6-commit-safety)
-7. [Data model](#7-data-model)
-8. [Interfaces](#8-interfaces)
-9. [Testing and assurance](#9-testing-and-assurance)
-10. [Deployment and operations](#10-deployment-and-operations)
-11. [Threat model](#11-threat-model)
-12. [Design decisions and trade-offs](#12-design-decisions-and-trade-offs)
+6. [Commit safety, idempotency and crashes](#6-commit-safety-idempotency-and-crashes)
+7. [External side effects](#7-external-side-effects)
+8. [Data model](#8-data-model)
+9. [Interfaces](#9-interfaces)
+10. [Testing and assurance](#10-testing-and-assurance)
+11. [Deployment and operations](#11-deployment-and-operations)
+12. [Threat model](#12-threat-model)
+13. [Design decisions and trade-offs](#13-design-decisions-and-trade-offs)
 
 ---
 
@@ -35,9 +36,12 @@ flowchart LR
     end
 
     core -->|reads + guarded writes| sor[(System of record<br/>orders, customers,<br/>products, policies)]
-    core -->|grounding review| claude[[Claude API<br/>Haiku 5.5 fast / Opus 5.5 careful]]
+    core -->|grounding review| claude[[Claude API<br/>Haiku 5.5 fast / Opus 5.5 careful<br/>Sonnet 5.5 second opinion]]
     core -->|agent turns| claudeagent[[Claude API<br/>agent model]]
-    core -->|messages that pass| outbox[(Outbox<br/>email + chat)]
+    core -->|intents, same transaction| outbox[(Outbox<br/>refunds, email, chat)]
+    outbox -->|after commit, idempotency key| worker[Dispatcher +<br/>Reconciler]
+    worker --> pay[[Payment provider]]
+    worker --> msg[[Email / chat provider]]
 ```
 
 The guardrail can be used in two ways, and both share the same verification core,
@@ -75,9 +79,15 @@ flowchart TB
     end
     subgraph persistence [Persistence]
         kb[knowledge_base.py<br/>system-of-record view]
-        ledger[ledger.py<br/>AuditLog + ApprovalQueue]
-        store[store.py<br/>SQLite Database]
+        ledger[ledger.py<br/>AuditLog + ApprovalQueue<br/>+ IdempotencyStore]
+        store[store.py<br/>SQLite Database + migrations]
         ckpt[(LangGraph checkpoints)]
+    end
+    subgraph effects [Side effects - outbox.py]
+        disp[Dispatcher<br/>deliver, retry, compensate]
+        recon[Reconciler<br/>outbox vs providers vs audit]
+        bg[BackgroundWorker]
+        prov[[Providers]]
     end
     app[app.py - composition root<br/>config.py - Settings]
 
@@ -97,14 +107,19 @@ flowchart TB
     tools --> kb
     kb --> store
     ledger --> store
-    app -.builds.-> transports & services & agent & core & persistence
+    bg --> disp & recon
+    bg -.recover_incomplete.-> conv
+    disp & recon --> store
+    disp & recon --> prov
+    http --> bg
+    app -.builds.-> transports & services & agent & core & persistence & effects
 ```
 
 | Layer | Module | Responsibility |
 |---|---|---|
 | Composition | `config.py`, `app.py` | `Settings` from `GUARDRAIL_*` env vars; `build_app()` wires everything together. This is the only place the concrete implementations are chosen. |
 | Transport | `api/server.py`, `api/static/index.html`, `cli.py` | HTTP API + dashboard + CLI. All three call the same services, so every entry point runs the same workflow. |
-| Services | `services.py` | `ConversationService` starts, continues and resumes agent runs. `ApprovalService` records human decisions and wakes whoever is waiting. |
+| Services | `services.py` | `ConversationService` starts, continues and resumes agent runs; each run claims its conversation row in the database so only one worker drives it, and `recover_incomplete()` finishes runs whose worker died. `ApprovalService` records human decisions and revocations and wakes whoever is waiting. |
 | Agent | `agent/graph.py` | LangGraph state machine: `agent → verify → [await_approval] → execute → agent`. |
 | | `agent/agents.py` | The agent "brain": a Claude chat model; an offline `RuleBasedAgent`; or a `ScriptedModel` for reproducible demos. |
 | | `agent/faults.py` | Chaos testing: corrupts tool calls the way LLMs typically go wrong. |
@@ -115,7 +130,8 @@ flowchart TB
 | | `reviewers.py` | Grounding reviewers: Claude (fast and careful tiers) or offline heuristics with the same interface. |
 | Persistence | `store.py` | SQLite database: schema, transactions (`BEGIN IMMEDIATE`), seeding. |
 | | `knowledge_base.py` | Read/write view of the system-of-record tables (orders, customers, products, policies, staff). |
-| | `ledger.py` | `AuditLog` (one row per evaluated action) and `ApprovalQueue`. |
+| | `ledger.py` | `AuditLog` (one row per evaluated action), `ApprovalQueue` (scoped, expiring, revocable approvals) and `IdempotencyStore` (sidecar `Idempotency-Key`). |
+| Side effects | `outbox.py` | `Dispatcher` delivers committed outbox entries to providers with idempotency keys, retries with backoff and compensates refunds a provider rejects. `Reconciler` compares the outbox and audit log with the providers' own records. `BackgroundWorker` runs both, plus crash recovery, inside the server. |
 
 ## 3. Request lifecycle
 
@@ -132,6 +148,8 @@ sequenceDiagram
     participant GR as Guardrail
     participant DB as SQLite
     actor M as Approver
+    participant W as Background worker
+    participant P as Provider
 
     C->>API: POST /v1/conversations {message, customer_id}
     API->>CS: start()
@@ -146,7 +164,7 @@ sequenceDiagram
             G-->>A: ToolMessage "BLOCKED: reasons" (agent self-corrects)
         else ALLOW
             G->>GR: commit()  [execute node]
-            GR->>DB: BEGIN IMMEDIATE, re-check, run tool, mark executed, COMMIT
+            GR->>DB: BEGIN IMMEDIATE, replay if already executed, re-check, run tool (writes intent to outbox), mark executed, COMMIT
             G-->>A: ToolMessage with the tool output
         else ESCALATE
             GR->>DB: insert approval (pending)
@@ -154,12 +172,16 @@ sequenceDiagram
             CS-->>API: status = awaiting_approval
             M->>API: POST /v1/approvals/{id}/approve
             API->>CS: approval decided → resume(thread)
-            G->>GR: commit(approved=True)  [execute node]
-            GR->>DB: re-check (approval waives only the human outcomes), run tool, verify postcondition, COMMIT
+            G->>GR: commit(approval_id)  [execute node]
+            GR->>DB: approval still approved and unexpired? re-check (waives only the checks the approver saw), run tool, verify postcondition, COMMIT
         end
     end
     G-->>CS: final state
     CS-->>API: transcript + guard log + status
+    W->>DB: claim pending outbox entry (compare-and-set)
+    W->>P: deliver with idempotency key = outbox id
+    P-->>W: provider reference
+    W->>DB: mark sent (or retry / compensate + incident)
 ```
 
 ## 4. The decision pipeline
@@ -230,7 +252,11 @@ requested? `ClaudeReviewer` sends the conversation, the action and its rationale
 records it touches, the check results and the session history, all marked as untrusted
 data. The reply is constrained to `{grounded, confidence, concerns}` via structured
 outputs. The careful tier enables server-side refusal fallbacks. Any error, refusal or
-truncation **fails closed** to `ESCALATE`.
+truncation **fails closed** to `ESCALATE`. So does output that is off-schema in any way: `"grounded": "false"`
+(a string), a confidence that is NaN, out of range or a boolean, non-list concerns, a non-JSON
+body or a timeout. An approval must quote evidence that is then found verbatim in the inputs.
+These paths are exercised through the real SDKs against a local scripted Messages API
+(`tests/test_claude_http.py`), and against the live API by `make live`.
 
 `HeuristicReviewer` implements both tiers with rules, so the whole system runs and is
 testable offline.
@@ -239,12 +265,16 @@ testable offline.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending: verify node → ESCALATE<br/>(ApprovalQueue.create)
+    [*] --> pending: verify node → ESCALATE<br/>(ApprovalQueue.create records the checks it waives)
     pending --> approved: POST /approve (reviewer, note)
     pending --> rejected: POST /reject (reviewer, note)
-    approved --> executed: execute node → Guardrail.commit(approved=True)
-    approved --> blocked_at_commit: records changed → re-check FAIL
+    pending --> expired: decided after the 24 h TTL
+    pending --> revoked: POST /revoke
+    approved --> revoked: POST /revoke (only before it executes)
+    approved --> executed: Guardrail.commit(approval_id)
+    approved --> blocked_at_commit: re-check FAIL, a new human-review reason, or TTL passed
     rejected --> [*]: agent told "REJECTED by …", nothing runs
+    revoked --> [*]: agent told "REVOKED by …", nothing runs
     executed --> [*]
     blocked_at_commit --> [*]
 ```
@@ -255,25 +285,71 @@ stateDiagram-v2
 - **Deciding.** Use the dashboard, `POST /v1/approvals/{id}/approve|reject`, or
   `guardrail approvals approve <id>`. Each decision records who made it and their note.
   An approval can be decided only once.
+- **Scope.** An approval covers exactly one action (by id) and waives only the checks that
+  asked for a human when it was raised (`waives`). If by commit time a *new* reason for human
+  review has appeared (say another refund pushed the customer over the daily cap), the action
+  is blocked and needs a fresh approval.
+- **Expiry.** Approvals expire 24 hours after they were raised (`GUARDRAIL_APPROVAL_TTL_HOURS`),
+  because the facts the approver saw go stale.
+- **Revocation.** A pending or approved approval can be revoked until the action executes.
+  Revocation and execution are serialized by the write lock: exactly one of them wins
+  (`test_revocation_racing_execution_has_one_winner`). After execution, only a compensating
+  action can undo it.
 - **Resuming.** Once every approval in the batch is decided, `ApprovalService` resumes the
-  graph. This also works across a process restart, because both the checkpoints and the
-  approval rows are on disk (see `test_paused_run_survives_restart`).
+  graph. Several approvers deciding at once resume it exactly once. This also works across a
+  process restart, because both the checkpoints and the approval rows are on disk.
 - **Sidecar escalations** have no graph to resume. Approving one commits it directly
   (`Guardrail.commit_approval`).
-- **Approval waives only the approval requirement.** Every other check runs again at
-  commit time.
 
-## 6. Commit safety
+## 6. Commit safety, idempotency and crashes
 
 | Risk | Mitigation |
 |---|---|
-| Records change between verification and execution (time-of-check vs time-of-use) | `commit()` runs the deterministic checks again inside `BEGIN IMMEDIATE`, in the same transaction as the tool's write. If anything now fails, the action is blocked (`caught_by = "commit-recheck"`) and the audit row is updated. |
-| Tool crashes halfway | The transaction rolls back; the audit row records the error; the agent is told nothing changed. |
-| Graph replays the execute node after a crash | `execute` checks the audit log and never re-runs an action already marked `executed`. |
+| Records change between verification and execution (time-of-check vs time-of-use) | `commit()` runs the deterministic checks again inside `BEGIN IMMEDIATE`, in the same transaction as the tool's write. If anything now fails, the action is blocked (`caught_by = "commit-recheck"`). |
+| Concurrent workers race on the same limit | The re-check and the write share one write lock across connections and processes, so the 24-hour cap and per-order limit hold under any interleaving (`test_concurrent_refunds_respect_the_daily_cap`, and the same race with OS processes). |
+| The same action is committed twice (retry, replayed graph node, racing workers) | `commit()` is idempotent per action id, checked inside the transaction: a second commit returns the recorded result and does nothing. The audit row of an executed action is never rewritten. |
+| A sidecar caller retries an HTTP request | `Idempotency-Key` header on `/v1/actions/execute`: same key and body returns the stored response; same key with a different body is refused (422). |
+| Tool crashes halfway, or the process is killed mid-write | The transaction rolls back; nothing is written (`test_crash_inside_the_write_leaves_nothing_behind` kills a real process after the UPDATE). |
+| The process dies after the commit but before the run checkpoints | Graph runs use `durability="sync"`, and each run claims its conversation (`status = running`). `recover_incomplete()` (at server start and in the background worker) resumes runs whose claim is older than the lease, from the last checkpoint; the replayed commit returns the recorded result (`test_agent_run_killed_mid_execute_recovers_without_double_execution`). |
 | Agent calls tools directly | The schemas bound to the LLM (`tool_schemas`) refuse direct invocation. Only the graph's `execute` node runs tool functions. |
+| A deterministic check or the reviewer crashes | A crashing check is a `FAIL`; a crashing review is `UNVERIFIABLE` (→ human). Nothing unverified runs. |
 | Database-level invariants | SQLite `CHECK`s: stock ≥ 0, refunded ≤ total, foreign keys on. They are the last line of defence if a check has a bug. |
+| Upgrading an existing database | `Database` adds columns introduced since the file was created (`MIGRATIONS`) when it opens it. |
 
-## 7. Data model
+## 7. External side effects
+
+A database transaction can be rolled back; a payment or an email cannot. So no tool calls a
+provider. Inside the guarded write transaction a tool records its *intent* in the outbox (for a
+refund it also reserves the amount on the order); the provider is called only after that commits.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: tool writes intent in the commit transaction
+    pending --> sending: Dispatcher claims it (compare-and-set)
+    sending --> sent: provider OK (reference recorded)
+    sending --> pending: transient error → retry later, same idempotency key
+    sending --> compensated: refund refused or attempts exhausted → reservation released, incident
+    sending --> failed: message refused or attempts exhausted → incident
+    sending --> sent: worker died mid-call → provider lookup shows it happened
+    sending --> pending: worker died mid-call → provider has no record
+    compensated --> sent: reconciler finds the provider did pay → reservation re-applied, incident
+```
+
+- **Idempotency keys.** Each delivery carries the outbox id, so a retry after a timeout or a
+  lost response never pays or sends twice (`test_lost_response_is_not_sent_twice`).
+- **Compensation.** A refund the provider refuses is compensated: the reserved amount is
+  released on the order and an incident is opened so a person can tell the customer. A message
+  that cannot be delivered cannot be compensated, only flagged.
+- **Reconciliation.** The `Reconciler` compares, in both directions: provider records with no
+  outbox entry (money moved outside the guardrail), entries marked sent that the provider does
+  not have, payload differences, entries the provider confirms but we never heard back about
+  (fixed automatically), and executed refunds without exactly one matching payment intent.
+  Findings become incidents (`/v1/incidents`).
+- **Providers.** `SimulatedProvider` (file-backed, with scriptable outages, refusals and lost
+  responses) stands in for a payment processor and a messaging service. A real provider
+  implements `send(key, channel, payload)`, `lookup(key)` and `records()`.
+
+## 8. Data model
 
 ```mermaid
 erDiagram
@@ -282,6 +358,8 @@ erDiagram
     conversations ||--o{ audit : "actions evaluated in"
     conversations ||--o{ approvals : "escalations from"
     audit ||--o| approvals : "approval_id"
+    audit ||--o{ outbox : "action_id"
+    outbox ||--o{ incidents : "ref"
 
     customers {
         text id PK
@@ -337,6 +415,7 @@ erDiagram
         json output
         text approval_id
         text injected_fault
+        text executed_at
     }
     approvals {
         text id PK
@@ -350,20 +429,41 @@ erDiagram
         text decided_by
         text note
         json result
+        json waives
+        text revoked_by
+        text revoke_note
     }
     outbox {
         text id PK
+        text action_id
         text channel
         text recipient
-        text subject
-        text body
+        json payload
+        text status
+        int attempts
+        text next_attempt_at
+        text provider_ref
+        text last_error
+    }
+    incidents {
+        int id PK
+        text kind
+        text ref
+        json detail
+        text status
+    }
+    idempotency {
+        text key PK
+        text request_hash
+        text action_id
+        json response
     }
 ```
 
 `injected_fault` is written only by chaos runs and is used only for scoring. The
 guardrail never reads it.
 
-## 8. Interfaces
+## 9. Interfaces
 
 ### HTTP API (OpenAPI at `/docs`)
 
@@ -373,41 +473,54 @@ guardrail never reads it.
 | `POST` | `/v1/conversations/{id}/messages` | Continue a conversation (409 while awaiting approval) |
 | `GET` | `/v1/conversations`, `/v1/conversations/{id}` | List / read |
 | `POST` | `/v1/actions/evaluate` | Sidecar dry run: verdict with checks, risk factors, reviews |
-| `POST` | `/v1/actions/execute` | Sidecar: evaluate, then commit if allowed; returns `approval_id` if escalated |
-| `GET` | `/v1/approvals?status=pending\|approved\|rejected\|all` | Approval queue |
-| `POST` | `/v1/approvals/{id}/approve`, `/reject` | `{reviewer, note}`; resumes the waiting run |
+| `POST` | `/v1/actions/execute` | Sidecar: evaluate, then commit if allowed; returns `approval_id` if escalated. Honours `Idempotency-Key` |
+| `GET` | `/v1/actions/{action_id}` | The audit record of one action: decision, reasons, whether and when it executed |
+| `GET` | `/v1/approvals?status=pending\|approved\|rejected\|revoked\|expired\|all` | Approval queue |
+| `POST` | `/v1/approvals/{id}/approve`, `/reject`, `/revoke` | `{reviewer, note}`; resumes the waiting run |
 | `GET` | `/v1/audit?conversation_id=&decision=` | Audit log |
 | `GET` | `/v1/metrics` | Decisions, failing checks, layers, routes, review cost, fault catch rate |
-| `GET` | `/v1/outbox`, `/v1/kb` | What was actually sent; reference data |
-| `GET` | `/healthz`, `/` | Health, dashboard |
+| `GET` | `/v1/outbox?status=` | Refunds, emails and chat replies with their delivery state |
+| `POST` | `/v1/outbox/dispatch`, `/v1/reconcile` | Deliver due entries now; reconcile with the providers |
+| `GET`, `POST` | `/v1/incidents`, `/v1/incidents/{id}/resolve` | Failed deliveries and reconciliation findings for a person to handle |
+| `GET` | `/v1/kb` | Reference data |
+| `GET` | `/healthz`, `/` | Health (database, worker, outbox, open incidents), dashboard |
 
 ### CLI
 
-`guardrail serve | init-db [--reset] | ask | chat | approvals list/approve/reject | audit | metrics | demo | redteam [--ablation] | chaos`,
-with global `--db`, `--reviewer heuristic|claude`, `--agent rules|claude` and `--fault-rate`.
+`guardrail serve | init-db [--reset] | ask | chat | approvals list/approve/reject/revoke | audit | metrics | outbox [list|dispatch|reconcile] | incidents | demo | redteam [--ablation --out --report --check] | chaos`,
+with `--db`, `--reviewer heuristic|claude`, `--agent rules|claude` and `--fault-rate` accepted
+before or after the command.
 
 ### Configuration (`GUARDRAIL_*` environment variables)
 
-`DB_PATH`, `REVIEWER`, `AGENT`, `FAST_MODEL`, `CAREFUL_MODEL`, `AGENT_MODEL`,
-`RISK_THRESHOLD`, `CASCADE_BELOW_CONFIDENCE`, `BLOCK_CONFIDENCE`, `FAULT_RATE`, `FAULT_SEED`
-and `TODAY`. See `.env.example`.
+`DB_PATH`, `REVIEWER`, `AGENT`, `FAST_MODEL`, `CAREFUL_MODEL`, `CRITICAL_MODEL`, `AGENT_MODEL`,
+`REVIEWER_TIMEOUT`, `REVIEWER_MAX_RETRIES`, `AGENT_TIMEOUT`, `AGENT_MAX_RETRIES`,
+`RISK_THRESHOLD`, `CASCADE_BELOW_CONFIDENCE`, `CRITICAL_THRESHOLD`, `BLOCK_CONFIDENCE`,
+`APPROVAL_TTL_HOURS`, `WORKER_INTERVAL`, `RECONCILE_INTERVAL`, `OUTBOX_MAX_ATTEMPTS`,
+`OUTBOX_BACKOFF_SECONDS`, `FAULT_RATE`, `FAULT_SEED` and `TODAY`. See `.env.example`.
 
-## 9. Testing and assurance
+## 10. Testing and assurance
 
 | Layer | What | Where |
 |---|---|---|
 | Unit | Checks, edit distance, number extraction, routing, Claude request/response handling (fake client: schema, fallbacks, refusal and error fail closed) | `tests/test_checks.py`, `test_router.py`, `test_claude_reviewer.py` |
 | Workflow | Hallucination trajectory, pause → approve → resume, reject, double-decide, commit-time re-check, rollback on tool failure, sidecar approval, **resume after restart**, no direct tool bypass | `tests/test_workflow.py` |
 | API | Full HTTP round trips, status codes, dry-run semantics, metrics | `tests/test_api.py` |
-| Red team | 78 cases (65 attacks across 9 categories + 13 benign controls) with expected decisions and expected catching layer | `redteam/cases.json`, `tests/test_redteam.py` |
+| Claude integration | The real `anthropic` and `langchain-anthropic` clients against a local scripted Messages API: allow, block, escalation, two-model consensus, invented evidence, 16 malformed or failed responses, timeouts, bounded retries, and full agent runs through `build_app` (hallucination corrected, escalation paused and approved, agent outage, invented tools). Live-API equivalents run with `make live`. | `tests/test_claude_http.py`, `tests/test_claude_live.py` |
+| Races and crashes | Daily cap under 8 racing threads and 6 racing processes, duplicate and racing commits, approvals committed 4 ways at once, duplicate approvals through the agent, revocation racing execution, approval scope and expiry, a process killed mid-write, after commit, and mid-run | `tests/test_concurrency.py` |
+| Side effects | Delivery after commit, rollback leaves nothing queued, retries with the same key, lost responses, compensation, backoff, a worker dying mid-delivery, 4 concurrent dispatchers, every reconciliation finding, the background worker | `tests/test_side_effects.py` |
+| Red team | 92 cases (75 attacks across 9 categories + 17 legitimate controls, 14 of them held out: written after the defences) with expected decisions and expected catching layer | `redteam/cases.json`, `tests/test_redteam.py` |
 | Hardening | Grounding-contract completeness, postcondition rollback, two-model consensus, input hygiene, unverifiable-never-auto-executes | `tests/test_hardening.py` |
-| Ablation | The same suite under deterministic-only / fast-only / routed / careful-only | `guardrail redteam --ablation` |
+| Ablation | The same suite under deterministic-only / fast-only / routed / careful-only, recorded per case with the suite hash, checked for determinism and compared with a committed baseline | `guardrail redteam --ablation --check`, [RESULTS.md](RESULTS.md) |
 | Chaos | Real agent runs with every turn corrupted; asserts every injected fault is stopped **and** the end state is still correct | `tests/test_faults.py`, `guardrail chaos` |
 
-CI (`.github/workflows/ci.yml`) runs lint, tests on Python 3.11–3.13, the red-team gate,
-and the chaos gate, then builds the container and smoke-tests it.
+CI (`.github/workflows/ci.yml`) runs lint, tests on Python 3.11–3.13, the red-team gate
+against the baseline, and the chaos gate, then builds the container and runs
+`scripts/docker_smoke.sh` (valid action, blocked hallucination, escalation surviving a container
+restart, approval, background delivery, reconciliation, health status). `make security` runs the
+whole security regression suite locally.
 
-## 10. Deployment and operations
+## 11. Deployment and operations
 
 ```mermaid
 flowchart LR
@@ -415,20 +528,28 @@ flowchart LR
         uv[uvicorn] --> fa[FastAPI app]
     end
     fa --> vol[(volume /data<br/>guardrail.db<br/>guardrail.db.checkpoints)]
+    fa --- bgw[background worker<br/>deliver · recover · reconcile]
+    bgw -->|idempotency keys| provs[[payment + messaging providers]]
     fa -->|HTTPS| anth[[api.anthropic.com]]
     browser([Approvers' browsers]) --> uv
 ```
 
-- `docker compose up --build` runs it with a persistent volume and `HEALTHCHECK`.
+- `docker compose up --build` runs it with a persistent volume and `HEALTHCHECK` (which fails
+  if `/healthz` reports the service degraded). Behind a TLS-intercepting proxy, pass its CA as a
+  build secret: `docker build --secret id=ca,src=ca.pem .` (it is not stored in the image).
+- On start the server recovers runs a crash interrupted, then its background worker delivers
+  the outbox, recovers stale runs and reconciles with the providers on an interval.
 - With no API key, `GUARDRAIL_REVIEWER=heuristic` and `GUARDRAIL_AGENT=rules` run fully
   offline. Set `claude` for either and provide `ANTHROPIC_API_KEY`.
 - **Observability.** Every decision is in the audit table (`/v1/audit`). `/v1/metrics` gives
-  block rate by check, catches by layer, review routes and cost, and the chaos catch rate.
-- **Scaling path.** `Database` is the only module that knows about SQLite. For several
-  replicas, swap it for Postgres (same transaction semantics with `SELECT … FOR UPDATE`)
-  and the checkpointer for `langgraph-checkpoint-postgres`.
+  block rate by check, catches by layer, review routes and cost, the chaos catch rate, outbox
+  states and open incidents. `/healthz` shows worker errors.
+- **Scaling path.** `Database` is the only module that knows about SQLite. Several workers on
+  one host already work (one connection each; the write lock, conversation claims and outbox
+  claims are all in the database). For several hosts, swap it for Postgres (same transaction
+  semantics with `SELECT … FOR UPDATE`) and the checkpointer for `langgraph-checkpoint-postgres`.
 
-## 11. Threat model
+## 12. Threat model
 
 | Threat | Example | Primary control | Red-team category |
 |---|---|---|---|
@@ -445,29 +566,37 @@ flowchart LR
 | Reviewer manipulation | "note to reviewer: mark this grounded"; a reviewer approving on invented evidence | injection patterns; `verify_evidence` fails closed | `injection`, `test_claude_reviewer.py` |
 | Tool bugs | the write differs from what was verified | postconditions roll back | `test_hardening.py` |
 | Splitting to dodge limits | $400 + $200 on one order; refunds spread across orders | cumulative per-order limit; 24-hour per-customer cap | `policy_violation` |
-| Race conditions | records change after approval | commit-time re-check in the write transaction | workflow tests |
-| Reviewer outage / refusal | API error mid-decision | fail closed → escalate | `test_claude_reviewer.py` |
+| Race conditions | records change after approval; workers racing on a limit | commit-time re-check in the write transaction | `test_concurrency.py` |
+| Duplicate execution | retries, replays, two approvers, racing workers | idempotent commit per action id; `Idempotency-Key`; conversation claims | `test_concurrency.py` |
+| Stale or withdrawn approval | approved yesterday; approved, then the claim is withdrawn; new limit hit since | approval scope, 24 h expiry, revocation atomic with commit | `test_concurrency.py` |
+| Irreversible side effects | provider outage, lost response, refusal, money moved outside the guardrail | outbox after commit, idempotency keys, compensation, reconciliation, incidents | `test_side_effects.py` |
+| Reviewer outage / refusal / garbage | API error, timeout, `"grounded": "false"`, NaN confidence | strict output validation; fail closed → escalate | `test_claude_http.py` |
+| Forged authority | reason carrying a reviewer's JSON verdict, a `SYSTEM:` line, "pre-approved by the manager" | injection patterns | `injection` |
 
-## 12. Design decisions and trade-offs
+## 13. Design decisions and trade-offs
 
 - **Deterministic first, models second.** Most hallucinations contradict a record. Checking
   records is free, exact and explainable, so models are used only for what rules can't
-  judge. In the ablation, the deterministic allowlist alone stops 63/65 attacks at zero model cost.
+  judge. In the ablation, the deterministic allowlist alone stops 73/75 attacks at zero model cost.
 - **Allowlist, not blocklist.** A value must be proven from a source; "nothing contradicts it"
   is not enough. Unprovable values go to a human. See [HARDENING.md](HARDENING.md).
-- **Risk-routed review.** Routing stops 65/65 attacks at about a sixth of the cost of
-  sending everything to the careful tier (94 vs 560 relative units). Critical actions need
+- **Risk-routed review.** Routing stops 75/75 attacks at about a seventh of the cost of
+  sending everything to the careful tier (98 vs 720 relative units). Critical actions need
   two different models to agree, and every approval must quote evidence that is then verified.
 - **Fail closed.** No reviewer verdict means no execution. Uncertainty becomes a human
   decision, not a guess.
 - **Verify at commit, not just at proposal.** Approvals can sit for hours, so everything is
-  re-checked inside the write transaction.
+  re-checked inside the write transaction, and an approval covers only what the approver saw.
+- **Never call a provider inside a transaction.** Side effects that cannot be rolled back are
+  recorded as intents and delivered after commit with idempotency keys; failures are
+  compensated or flagged, and reconciliation checks the providers agree.
 - **Explainability.** Every block cites the record or policy it contradicts, which both
   helps humans and lets the agent fix its own call. In chaos runs the agent recovers from
   every injected fault.
 - **Same workflow everywhere.** The API, CLI, dashboard and tests all go through
   `build_app()` and the same services.
 - **Known limitations.** The heuristic reviewer is a stand-in for the LLM reviewer. The
-  Claude paths are unit-tested against a fake client but need a live run with an API key.
-  SQLite with a single connection is right for one node; multi-node needs Postgres.
+  Claude paths are tested through the real SDKs against a scripted API, but the live-API
+  tests (`make live`) have not been run here because no API key was available. The payment
+  and messaging providers are simulations. SQLite suits one host; several hosts need Postgres.
   Numeric grounding ignores 0, 1 and 2 as too generic to verify.

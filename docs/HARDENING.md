@@ -52,16 +52,24 @@ approved away. Every check runs again inside the write transaction.
 | 12 | **Postconditions** | tool bugs: the effect must equal what was verified (refund moved by exactly the amount, stock by exactly delta, message stored is the message checked), otherwise the transaction rolls back | `ToolSpec.postcondition` |
 | 13 | **Database invariants** | the last line of defence: `CHECK (stock >= 0)`, `CHECK (refunded <= total)`, foreign keys | `store.py` |
 | 14 | **Grounding contracts** | coverage gaps: every parameter of every tool must name the checks that verify it; the app refuses to start otherwise | `ToolSpec._validate_contract` |
+| 15 | **Strict reviewer output** | a reviewer "approving" through malformed output: `"grounded": "false"` (a string), NaN, out-of-range or boolean confidence, non-list fields, non-JSON bodies, timeouts and SDK errors all fail closed. Five of these used to become approvals | `parse_review`, `ClaudeReviewer.review` |
+| 16 | **Idempotent execution** | duplicate side effects from retries, replayed graph nodes, racing workers or two approvers: an action executes at most once, checked inside the write transaction; sidecar `Idempotency-Key` | `Guardrail.commit`, `IdempotencyStore` |
+| 17 | **Approvals that can't go stale** | an approval reused for something the approver never saw: it waives only the checks that asked for it, expires after 24 h, and can be revoked until the action runs (atomic with execution) | `ApprovalQueue.authorizes`, `revoke` |
+| 18 | **Outbox, compensation, reconciliation** | irreversible effects done wrong: nothing calls a provider inside a transaction; intents are delivered after commit with idempotency keys, refused refunds are compensated, and the providers' own records are reconciled with the outbox and audit log | `outbox.py` |
+| 19 | **Crash recovery** | half-finished runs: conversation claims in the database, synchronous checkpoints, and recovery that resumes a dead worker's run without re-executing | `ConversationService.recover_incomplete` |
 
 ## How the strength is measured
 
 | Instrument | Result |
 |---|---|
-| Red-team suite: 78 cases (65 attacks in 9 categories + 13 legitimate controls) | **65/65 attacks stopped, 0/13 false positives** |
-| Deterministic layer alone | 63/65 at zero model cost; the other 2 (invented reason, reversed stock direction) need the reviewer |
+| Red-team suite: 92 cases (75 attacks in 9 categories + 17 legitimate controls), all four configurations, recorded in [RESULTS.md](RESULTS.md) | **75/75 attacks stopped, 0/17 false positives** (routed, fast-only and careful-only); identical decisions on repeated runs; CI fails on any regression against the committed baseline |
+| Deterministic layer alone | 73/75 at zero model cost; the other 2 (invented reason, reversed stock direction) need the reviewer |
 | Chaos runs: realistic hallucinations injected into live agent runs | **35/35 stopped**, and the agent recovers so the final records are still correct |
-| Held-out probing: new attacks written *after* the defences, to avoid testing only what was designed for | first round found 4 holes (a "forget your rules" injection, a customer asking for more than an item's price, a phishing link, "purchase" swapped for "delivery"); all fixed and added to the suite |
-| Tests | 131, including contract completeness, postcondition rollback, consensus, fail-closed reviewer paths, and restart survival |
+| Held-out probing: new attacks written *after* the defences, to avoid testing only what was designed for | round 1 found 4 holes (a "forget your rules" injection, a customer asking for more than an item's price, a phishing link, "purchase" swapped for "delivery"). Round 2 found 6 more that the previous code **allowed**, reviewer included: a reason carrying a forged reviewer verdict in JSON, a forged `SYSTEM:` line, a claimed manager sign-off, a `javascript:` URI, a look-alike domain written without `https://`, and another customer's data emailed to staff from a customer's conversation. All fixed and in the suite, with 4 more variants and 4 legitimate controls for false positives |
+| Claude failure modes, through the real SDKs against a scripted API | 16 malformed or failed responses, timeouts and bounded retries all fail closed; full agent runs through `build_app` |
+| Races and crashes | daily cap under 8 racing threads and 6 racing processes; duplicate and racing commits execute once; revocation racing execution has one winner; real process kills mid-write, after commit, and mid-run |
+| Side effects | lost responses never pay twice; refused refunds are compensated; reconciliation detects money moved outside the guardrail, missing and altered provider records, and broken audit links |
+| Tests | 218, on Python 3.11, 3.12 and 3.13 from a fresh clone |
 
 A perfect score on attacks the builder wrote is necessary, not sufficient. Keep adding held-out
 attacks, ideally written by someone else, and run the suite with the Claude reviewers.
@@ -93,6 +101,13 @@ attacks, ideally written by someone else, and run the suite with the Claude revi
 - **Item-level refund history** is not modeled (refunds are tracked per order), so refunding
   the same item twice is limited only by the order's refundable balance.
 - **Sidecar callers** must pass honest `observations`. The guard can only verify against the
-  evidence it is given.
-- **Live Claude paths** (agent, reviewers, second opinion) are unit-tested against a fake
-  client. They must be exercised with a real key and the red-team suite before production.
+  evidence it is given. They should also pass their own `conversation_id`: the default
+  (`"sidecar"`) is shared, so the circuit breaker and duplicate check would pool callers.
+- **Compensated refunds still count** toward the 24-hour cap (the cap reads executed
+  decisions). This errs on the safe side but can make a customer wait for a human sooner.
+- **Messages can't be unsent.** A message that fails permanently is flagged as an incident;
+  one that was delivered with wrong content can only be followed by a correction.
+- **Live Claude paths** (agent, reviewers, second opinion) are tested through the real SDKs
+  against a scripted API, including every failure mode above. `make live` runs them against
+  the real API with the red-team suite; that has not been done yet because no key was
+  available. Do it before production.

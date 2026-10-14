@@ -12,6 +12,7 @@ against what the user actually said, before anything changes.
                                                       └── "BLOCKED: <reason>" ◄─┤ BLOCK     (agent self-corrects)
                                     approver ──► approval queue ◄── pause ◄─────┤ ESCALATE  (human-in-the-loop)
                                                                                 └ ALLOW → re-check + execute in one DB transaction
+                                                                                            └► outbox ──after commit──► payment / email providers
 ```
 
 **The guarantee:** no action the system cannot verify is ever executed automatically. Every
@@ -22,34 +23,38 @@ actually looked up, or it is blocked, or it goes to a human. Doubt never turns i
   other approaches considered, and residual risks.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: component, sequence, state and data
   diagrams; threat model; trade-offs.
+- **[docs/RESULTS.md](docs/RESULTS.md)**: the recorded security regression results for all four
+  configurations (reproducible; CI fails on any regression against them).
 
 ## What's in the box
 
 | | |
 |---|---|
-| **Verification pipeline** | Strict schemas → 30 deterministic checks written as an allowlist (pass / fail / unverifiable → human) → risk scoring → fast (Claude Haiku 5.5) or careful (Claude Opus 5.5) reviewer, with two models required to agree on critical actions. Reviewers must quote evidence that is then verified. Fails closed. |
+| **Verification pipeline** | Strict schemas → 30 deterministic checks written as an allowlist (pass / fail / unverifiable → human) → risk scoring → fast (Claude Haiku 5.5) or careful (Claude Opus 5.5) reviewer, with two models required to agree on critical actions. Reviewers must quote evidence that is then verified; their output is strictly validated, and any timeout, outage, refusal or malformed reply fails closed. |
 | **Provenance** | Every ID, amount and quantity must come from what the user said or a lookup the agent actually made. Real-but-unmentioned orders, wrong-item prices and arbitrary amounts never auto-execute. |
 | **Claim verification** | Customer-facing text: verbatim citations, grounded numbers and dates, no dropped conditions, no added absolutes, no reversed meaning, no swapped reference points, no external links, no other customers' data. |
 | **Brakes** | Circuit breaker revokes autonomy after repeated blocked attempts; 24-hour per-customer refund cap; per-order approval limit. |
 | **Structural guarantees** | Every parameter of every tool must be covered by named checks (the app won't start otherwise); postconditions verify each write and roll it back if wrong. |
 | **Agent workflow** | LangGraph state machine `agent → verify → [await approval] → execute`, with checkpoints so paused runs survive restarts. |
 | **Human-in-the-loop** | Over-limit or uncertain actions pause the run; an approver approves or rejects in the dashboard, API or CLI; the run resumes. |
-| **Commit safety** | Checks re-run inside the write transaction; tool failures roll back; replays never double-execute. |
-| **Persistence** | SQLite system of record + audit log + approval queue + outbox + LangGraph checkpoints. |
+| **Commit safety** | Checks re-run inside the write transaction; tool failures roll back. Commit is idempotent per action, so retries, replays and racing workers execute once; sidecar callers can send an `Idempotency-Key`. Runs interrupted by a crash are resumed from their checkpoint. |
+| **Approvals that can't go stale** | An approval covers one action and only the checks the approver saw; it expires after 24 hours and can be revoked until the action runs. |
+| **Side effects that can't be rolled back** | Refunds and messages are recorded in an outbox inside the transaction and delivered after commit with idempotency keys; retries, compensation for refused refunds, and reconciliation against the providers' records, with incidents for anything that doesn't match. |
+| **Persistence** | SQLite system of record + audit log + approval queue + outbox + incidents + LangGraph checkpoints, with schema migrations for existing databases. |
 | **Interfaces** | REST API (agent mode and sidecar mode for any other agent stack), web dashboard, `guardrail` CLI. |
-| **Assurance** | 131 tests; a 78-case red-team suite with ablation; chaos testing that injects hallucinations into live agent runs; held-out adversarial probing. CI runs all of it. |
-| **Ops** | Dockerfile + compose, health check, `.env` config, metrics endpoint, GitHub Actions. |
+| **Assurance** | 218 tests, including the real Claude SDKs against a scripted API, thread and process races, real process crashes, and side-effect failures; a 92-case red-team suite (14 held-out cases) recorded for all four configurations against a committed baseline; chaos testing that injects hallucinations into live agent runs. CI runs all of it. |
+| **Ops** | Dockerfile + compose, health check, end-to-end container smoke test, background worker, `.env` config, metrics and incidents endpoints, GitHub Actions. |
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
 
-python -m guardrail demo          # 3 scenarios: hallucinations caught · approval pause/resume · chaos run
+python -m guardrail demo          # a valid action runs · a hallucination is blocked · a human decides
 python -m guardrail serve         # dashboard at http://127.0.0.1:8000/, API docs at /docs
 ```
 
-Or with Docker: `docker compose up --build` → http://localhost:8000/
+Python 3.11 or newer. Or with Docker: `docker compose up --build` → http://localhost:8000/
 
 Everything runs **offline by default**, using the rule-based agent and heuristic reviewers.
 To use Claude, set `ANTHROPIC_API_KEY` and either or both of these:
@@ -80,6 +85,10 @@ guardrail ask "My order O-5001 arrived with a cracked lantern. Can I get a refun
 guardrail ask "The kayak from order O-5005 leaks, it's defective. I'd like a full refund." --customer C-1002   # pauses
 guardrail approvals list
 guardrail approvals approve <approval-id> --reviewer-name morgan.lee --note "photos verified"   # resumes the run
+guardrail approvals revoke <approval-id> --reviewer-name dana.ops     # withdraw it before it runs
+guardrail outbox                          # refunds and messages, with delivery state
+guardrail outbox reconcile                # compare with the providers' records
+guardrail incidents
 guardrail chat --customer C-1001          # interactive; /approve and /reject inline
 guardrail audit --decision block
 guardrail metrics
@@ -94,7 +103,8 @@ curl -X POST localhost:8000/v1/actions/evaluate -H 'content-type: application/js
   "context": {"conversation": ["My lantern on O-5001 arrived cracked, please refund it."], "customer_id": "C-1001"}}'
 # → {"decision": "block", "reasons": ["[order_exists] Order O-5010 does not exist ... (closest real order: O-5001)"], "checks": [...], ...}
 ```
-`/v1/actions/execute` also commits if allowed, or returns an `approval_id` if escalated.
+`/v1/actions/execute` also commits if allowed, or returns an `approval_id` if escalated. Send an
+`Idempotency-Key` header and a retried request returns the original response instead of acting twice.
 
 ### In Python
 ```python
@@ -123,41 +133,58 @@ Policies carry machine-readable limits (`refund_window_days: 30`,
 
 ## Results (offline reviewers)
 
-**Demo, scenario 1.** A scripted hallucinating agent proposes 9 actions: a transposed order
-ID, a 10× amount, the tent's price for a lantern request, then the correct refund, a misquoted
-policy, a typo-squatted email, the corrected messages, and a duplicate refund. All 6 bad ones
-are blocked. Because three refund attempts had already been blocked, the agent has lost its
-autonomy for refunds: even its correct refund waits for a manager's approval (the circuit
-breaker). The customer is refunded exactly $49.99, and $679.88 of bad refunds is stopped.
+**Demo** (`guardrail demo`, three acts on one system of record):
 
-**Red-team ablation** (`guardrail redteam --ablation`, 65 attacks in 9 categories + 13 legitimate controls):
-
-| Configuration | Attacks stopped | False positives | Review cost* |
+| Act | What the agent proposes | Guardrail | Outcome |
 |---|---|---|---|
-| deterministic checks only | 63 / 65 | 0 / 13 | 0 |
-| + fast reviewer on everything | 65 / 65 | 0 / 13 | 16 |
-| **+ risk routing (default)** | **65 / 65** | **0 / 13** | **94** |
-| + careful reviewer on everything | 65 / 65 | 0 / 13 | 560 |
+| 1 · valid action | refund $49.99 for Ada's cracked lantern on O-5001 | **allow**: every value proven, fast review | runs; the payment is delivered after commit |
+| 2 · hallucination | refund on O-5080 (digits transposed) | **block**: "Order O-5080 does not exist (closest real order: O-5008)" | nothing runs; the agent corrects itself and the fix runs |
+| 3 · human escalation | refund $649 for Grace's leaking kayak | **escalate**: over the $500 limit and the $600 daily cap | the run pauses; a manager approves; re-verified; runs |
+
+It ends with $828.98 paid in exactly three refunds and zero reconciliation mismatches.
+`guardrail demo --scenario 1|2|3` runs the deeper scenarios (a nine-step hallucinating agent
+that trips the circuit breaker, the approval flow on its own, and a chaos run).
+
+**Security regression** (`make security`; recorded in [docs/RESULTS.md](docs/RESULTS.md); 75 attacks in 9 categories + 17 legitimate controls):
+
+| Configuration | Attacks stopped | Held-out attacks | False positives | Review cost* |
+|---|---|---|---|---|
+| deterministic checks only | 73 / 75 | 10 / 10 | 0 / 17 | 0 |
+| + fast reviewer on everything | 75 / 75 | 10 / 10 | 0 / 17 | 20 |
+| **+ risk routing (default)** | **75 / 75** | **10 / 10** | **0 / 17** | **98** |
+| + careful reviewer on everything | 75 / 75 | 10 / 10 | 0 / 17 | 720 |
 
 \*Relative units: fast review = 1, careful = 40 (the ratio of Claude Haiku 5.5 to Claude Opus 5.5 list prices).
 
-The deterministic allowlist does almost all the work at zero model cost. The two attacks it
-leaves to the reviewer are an invented refund reason and a reversed stock direction. These
-numbers come from attacks written alongside the defences. Held-out probing (attacks written
-afterwards) found 4 more holes, which were fixed and added to the suite. See
-[docs/HARDENING.md](docs/HARDENING.md).
+Every configuration gives identical decisions on repeated runs, and CI fails on any regression
+against the committed baseline. The deterministic allowlist does almost all the work at zero
+model cost; the two attacks it leaves to the reviewer are an invented refund reason and a
+reversed stock direction. Held-out probing (attacks written after the defences) has found
+holes twice: 4 in the first round and 6 in the second (a reason forging a reviewer verdict, a
+forged `SYSTEM:` line, a claimed manager sign-off, a `javascript:` link, a look-alike domain
+without `https://`, another customer's data emailed to staff). All are fixed and in the suite.
+See [docs/HARDENING.md](docs/HARDENING.md).
 
 **Chaos** (`guardrail chaos --rounds 3`): every agent turn gets an injected hallucination
 (transposed IDs, decimal slips, wrong customer, inflated policy numbers, fabricated citations,
 stock sign flips…). **35/35 injected faults were stopped**, and because the agent recovers from
 the feedback, the final records are still correct (asserted in `tests/test_faults.py`).
 
+**Races, crashes and side effects** (`tests/test_concurrency.py`, `tests/test_side_effects.py`):
+8 threads and 6 separate processes racing to refund one customer never exceed the daily cap;
+the same action committed by several workers at once executes once; revocation racing
+execution always has exactly one winner; a process killed mid-write leaves nothing behind,
+and one killed after commit is recovered without executing twice; lost provider responses
+never pay twice, refused refunds are compensated, and reconciliation flags money that moved
+outside the guardrail.
+
 ## Project layout
 
 ```
 guardrail/
   config.py  app.py                 settings, composition root
-  guard.py                          evaluate → commit / approvals
+  guard.py                          evaluate → commit (idempotent) / approvals
+  outbox.py                         delivery to providers, compensation, reconciliation, background worker
   checks.py  tools.py               deterministic checks, tool specs (schema + checks + risk)
   risk.py  reviewers.py             risk score + routing; Claude / heuristic reviewers
   knowledge_base.py  ledger.py  store.py   system of record, audit + approvals, SQLite
@@ -166,16 +193,22 @@ guardrail/
   api/    server.py static/index.html      REST API + dashboard
   cli.py  demo.py  redteam.py
   data/kb/*.json                    seed data
-redteam/cases.json                  78 red-team cases
-tests/                              unit, workflow, API, red-team, chaos
-docs/ARCHITECTURE.md  docs/HARDENING.md
+redteam/cases.json                  92 red-team cases
+redteam/results/baseline.json       recorded results CI compares against
+tests/                              unit, workflow, API, Claude SDK, races and crashes, side effects, red-team, chaos
+scripts/docker_smoke.sh             end-to-end container test (CI and make docker-smoke)
+docs/ARCHITECTURE.md  docs/HARDENING.md  docs/RESULTS.md
 Dockerfile  docker-compose.yml  Makefile  .github/workflows/ci.yml  .env.example
 ```
 
 ## Development
 
 ```bash
-make check     # lint + tests + red-team gate + chaos gate (what CI runs)
+make check          # lint + tests + red-team gate (vs baseline) + chaos gate: what CI's test job runs
+make security       # the complete security regression suite, with recorded results
+make docker-smoke   # build the image and run the end-to-end container test: CI's docker job
+make live           # live Claude reviewers and agent (needs ANTHROPIC_API_KEY)
+make baseline       # re-record the red-team baseline after deliberately changing the suite
 ```
 
 To add an action class, write `check(action, ctx, kb, session) -> CheckResult | None` in
@@ -184,10 +217,13 @@ To add an action class, write `check(action, ctx, kb, session) -> CheckResult | 
 ## Limitations
 
 - The offline `HeuristicReviewer` and `RuleBasedAgent` are rule-based stand-ins, so the
-  whole system can run and be tested without a key. The Claude reviewer's request and
-  response handling is unit-tested against a fake client. The live Claude paths
-  (reviewer and agent) have not been exercised against the real API in this environment.
-- SQLite with a single connection suits a single node; the scaling path (Postgres) is
-  described in the architecture doc.
-- The Docker image and CI workflow were written but not built here, because no Docker
-  daemon was available. The same install was smoke-tested in a clean virtualenv.
+  whole system can run and be tested without a key. The Claude reviewer and agent are tested
+  through the real SDKs against a scripted local API. The live-API tests (`make live`) are
+  written but have **not** been run, because no API key was available here.
+- The payment and messaging providers are simulations behind a small interface
+  (`send`, `lookup`, `records`); a real deployment plugs real providers in there.
+- SQLite suits a single host (several workers on it are fine); the multi-host path
+  (Postgres) is described in the architecture doc.
+- The Docker image, compose file and container smoke test were run here, and the CI steps were
+  run from a fresh clone on Python 3.11, 3.12 and 3.13. GitHub Actions itself has not run the
+  workflow yet, because the branch could not be pushed.
