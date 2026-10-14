@@ -23,6 +23,9 @@ actually looked up, or it is blocked, or it goes to a human. Doubt never turns i
   other approaches considered, and residual risks.
 - **[docs/GUIDE.md](docs/GUIDE.md)**: start here. What it is, whether it is ready for you, how to
   integrate it, the API and configuration reference, how to deploy it, and the operations runbook.
+- **[docs/DOCKER.md](docs/DOCKER.md)**: run it with Docker, step by step, with troubleshooting.
+- **[docs/round1/](docs/round1/README.md)**: the Perceptron Hackathon Round 1 abstract (PDF), the
+  requirements checklist, the architecture diagram, and prompts to regenerate them with Claude.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: component, sequence, state and data
   diagrams; threat model; trade-offs.
 - **[docs/RESULTS.md](docs/RESULTS.md)**: the recorded security regression results for all four

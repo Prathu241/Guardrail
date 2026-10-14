@@ -1,0 +1,26 @@
+<section id="crux" data-transition="fade" style="background:#F4F5F1;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#2A5BD7">Understanding of the challenge</p>
+<h2 style="font-size:64px;font-weight:600;line-height:1.15">What makes it hard</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;border:1px solid #D9DDD6;border-radius:16px;padding:36px">
+<h3 style="font-size:36px;font-weight:600">Wrong actions pass naive checks</h3>
+<p style="font-size:28px;line-height:1.4;color:#3D4A5C">A $129.99 refund on Ada's real order is valid on paper. It is the tent's price; she asked about the lantern. The check must compare against what the user asked, not only against the database.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;border:1px solid #D9DDD6;border-radius:16px;padding:36px">
+<h3 style="font-size:36px;font-weight:600">No contradiction is not proof</h3>
+<p style="font-size:28px;line-height:1.4;color:#3D4A5C">A blocklist of known mistakes misses the next new one. Every value must be proven from a source, or a person decides.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;border:1px solid #D9DDD6;border-radius:16px;padding:36px">
+<h3 style="font-size:36px;font-weight:600">Checking and doing must be one step</h3>
+<p style="font-size:28px;line-height:1.4;color:#3D4A5C">Records change between the check and the write, a retry can pay twice, and a sent email cannot be recalled.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FFFFFF;border:1px solid #D9DDD6;border-radius:16px;padding:36px">
+<h3 style="font-size:36px;font-weight:600">The checker can be fooled too</h3>
+<p style="font-size:28px;line-height:1.4;color:#3D4A5C">An LLM judge reads the agent's arguments, so it can be prompt-injected through them, or approve on evidence it made up.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6B7688">The crux: prove each action is grounded, atomically with executing it, without trusting the model that proposed it or the one that reviews it.</p>
+<aside>The surface prompt is "check the action against a source". The real difficulty is that hallucinations are usually valid-looking, the absence of a contradiction proves nothing, verification and execution must be atomic, and an LLM verifier is itself an attack surface.</aside>
+</section>

@@ -1,0 +1,16 @@
+<section id="risks" data-transition="fade" style="background:#F4F5F1;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#2A5BD7">Feasibility · risks</p>
+<h2 style="font-size:64px;font-weight:600;line-height:1.15">What could go wrong, and our plan for it</h2>
+</div>
+<table style="font-size:26px;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif">
+<tr style="background:#E8EBE4"><th style="width:38%;text-align:left">Risk</th><th style="width:62%;text-align:left">Mitigation</th></tr>
+<tr><td>Live Claude judges differently from the offline stand-ins</td><td>Run it in week 1. The checks layer does not depend on the model. Each disagreement becomes a red-team case.</td></tr>
+<tr style="background:#FFFFFF"><td>Checks overfit to attacks we wrote</td><td>Held-out attacks by outsiders and an external benchmark, reported separately.</td></tr>
+<tr><td>Too many escalations annoy users</td><td>17 legitimate controls gate every change; false positives are a headline metric.</td></tr>
+<tr style="background:#FFFFFF"><td>Model latency or cost</td><td>Checks first; read-only tools skip review; routing measured on cost and latency.</td></tr>
+<tr><td>API outage during the demo</td><td>By design it fails closed to a person; the demo also runs fully offline.</td></tr>
+</table>
+<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6B7688">Known limit: checks are domain-specific by design. A new tool needs its own checks and attack cases.</p>
+<aside>The main risk is that the live model behaves differently from our offline reviewer stand-ins, which is why that comparison is the first milestone.</aside>
+</section>

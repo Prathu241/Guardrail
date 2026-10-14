@@ -14,3 +14,4 @@ dist/
 redteam/results/latest.*
 deploy/.env.production
 .env
+docs/round1/abstract.html

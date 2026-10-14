@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" color="#1b2230" role="img" aria-label="A proposed tool call passes schema, allowlist checks, risk scoring and model review. Blocked calls return to the agent with a reason; escalated calls wait in the approval queue for a person; allowed and approved calls run inside one write transaction that re-checks everything and records an outbox intent. Only after commit does the dispatcher call the payment and email providers, and the reconciler compares their records with ours.">
+          <rect width="1000" height="560" fill="#ffffff"/>
+<defs><style>
+  text { font-family: "IBM Plex Sans", Arial, Helvetica, sans-serif; fill: #1b2230; }
+  .t { font-size: 13px; font-weight: 600; }
+  .s { font-size: 11px; fill: #5a6475; }
+  .lbl { font-size: 11.5px; font-weight: 500; }
+  .box { fill: #ffffff; stroke: #1b2230; stroke-width: 1.2; }
+  .frame { fill: none; stroke: #5a6475; stroke-width: 1.2; }
+  .txn { fill: none; stroke: #2c4a8a; stroke-width: 1.6; stroke-dasharray: 6 4; }
+  .edge { fill: none; stroke: #1b2230; stroke-width: 1.4; }
+  .allow { stroke: #1f7a4d; } .esc { stroke: #9a5b00; } .block { stroke: #b3261e; }
+  .fill-allow { fill: #1f7a4d; } .fill-esc { fill: #9a5b00; } .fill-block { fill: #b3261e; } .fill-accent { fill: #2c4a8a; }
+  .dashed { stroke-dasharray: 4 4; }
+</style>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+            <marker id="ah-allow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fill-allow"/></marker>
+            <marker id="ah-esc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fill-esc"/></marker>
+            <marker id="ah-block" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fill-block"/></marker>
+          </defs>
+
+          <!-- agent -->
+          <rect class="box" x="20" y="88" width="112" height="60" rx="8"/>
+          <text class="t" x="76" y="114" text-anchor="middle">Agent</text>
+          <text class="s" x="76" y="132" text-anchor="middle">Claude or rules</text>
+
+          <!-- evaluate frame -->
+          <rect class="frame" x="165" y="52" width="455" height="128" rx="10"/>
+          <text class="s" x="181" y="72">evaluate() · every verdict is written to the audit log</text>
+          <rect class="box" x="180" y="88" width="95" height="60" rx="6"/>
+          <text class="t" x="227.5" y="114" text-anchor="middle">Schema</text>
+          <text class="s" x="227.5" y="132" text-anchor="middle">strict types</text>
+          <rect class="box" x="290" y="88" width="95" height="60" rx="6"/>
+          <text class="t" x="337.5" y="114" text-anchor="middle">30 checks</text>
+          <text class="s" x="337.5" y="132" text-anchor="middle">allowlist</text>
+          <rect class="box" x="400" y="88" width="95" height="60" rx="6"/>
+          <text class="t" x="447.5" y="114" text-anchor="middle">Risk</text>
+          <text class="s" x="447.5" y="132" text-anchor="middle">score 0–1</text>
+          <rect class="box" x="510" y="88" width="95" height="60" rx="6"/>
+          <text class="t" x="557.5" y="114" text-anchor="middle">Review</text>
+          <text class="s" x="557.5" y="132" text-anchor="middle">1 or 2 models</text>
+          <line class="edge" x1="132" y1="118" x2="178" y2="118" marker-end="url(#ah)"/>
+          <text class="s" x="155" y="108" text-anchor="middle">tool call</text>
+          <line class="edge" x1="275" y1="118" x2="288" y2="118" marker-end="url(#ah)"/>
+          <line class="edge" x1="385" y1="118" x2="398" y2="118" marker-end="url(#ah)"/>
+          <line class="edge" x1="495" y1="118" x2="508" y2="118" marker-end="url(#ah)"/>
+
+          <!-- BLOCK back to the agent -->
+          <polyline class="edge block" points="230,180 230,226 76,226 76,150" marker-end="url(#ah-block)"/>
+          <text class="lbl" x="153" y="246" text-anchor="middle" style="fill:#b3261e">BLOCK · reason goes back</text>
+          <text class="s" x="153" y="262" text-anchor="middle">the agent fixes its own call</text>
+
+          <!-- ESCALATE to the approval queue -->
+          <line class="edge esc" x1="450" y1="180" x2="450" y2="268" marker-end="url(#ah-esc)"/>
+          <text class="lbl" x="460" y="230" style="fill:#9a5b00">ESCALATE</text>
+          <rect class="box" x="385" y="270" width="130" height="56" rx="6"/>
+          <text class="t" x="450" y="294" text-anchor="middle">Approval queue</text>
+          <text class="s" x="450" y="312" text-anchor="middle">run paused</text>
+          <rect class="box" x="385" y="410" width="130" height="56" rx="6"/>
+          <text class="t" x="450" y="434" text-anchor="middle">Approver</text>
+          <text class="s" x="450" y="452" text-anchor="middle">approve · reject · revoke</text>
+          <line class="edge" x1="450" y1="410" x2="450" y2="328" marker-end="url(#ah)"/>
+          <text class="s" x="460" y="373">decides</text>
+          <polyline class="edge esc" points="515,298 640,298 640,112"/>
+          <circle cx="640" cy="109" r="3.5" class="fill-esc"/>
+          <text class="lbl" x="530" y="288" style="fill:#9a5b00">approved → resume</text>
+
+          <!-- ALLOW into the transaction -->
+          <line class="edge allow" x1="620" y1="109" x2="668" y2="109" marker-end="url(#ah-allow)"/>
+          <text class="lbl" x="624" y="99" style="fill:#1f7a4d">ALLOW</text>
+
+          <!-- the write transaction -->
+          <rect class="txn" x="652" y="52" width="330" height="292" rx="10"/>
+          <text class="lbl" x="668" y="72" style="fill:#2c4a8a">one write transaction · commit() is idempotent</text>
+          <rect class="box" x="670" y="90" width="294" height="38" rx="5"/>
+          <text class="lbl" x="684" y="114">Already executed? Return the recorded result</text>
+          <rect class="box" x="670" y="140" width="294" height="38" rx="5"/>
+          <text class="lbl" x="684" y="164">Approval still valid? Re-run every check</text>
+          <rect class="box" x="670" y="190" width="294" height="38" rx="5"/>
+          <text class="lbl" x="684" y="214">Tool writes + outbox intent (no provider call)</text>
+          <rect class="box" x="670" y="240" width="294" height="38" rx="5"/>
+          <text class="lbl" x="684" y="264">Postcondition holds, or everything rolls back</text>
+          <rect class="box" x="670" y="290" width="294" height="38" rx="5"/>
+          <text class="lbl" x="684" y="314">Mark executed in the audit log · COMMIT</text>
+          <line class="edge" x1="817" y1="128" x2="817" y2="139" marker-end="url(#ah)"/>
+          <line class="edge" x1="817" y1="178" x2="817" y2="189" marker-end="url(#ah)"/>
+          <line class="edge" x1="817" y1="228" x2="817" y2="239" marker-end="url(#ah)"/>
+          <line class="edge" x1="817" y1="278" x2="817" y2="289" marker-end="url(#ah)"/>
+
+          <!-- after commit -->
+          <line class="edge" x1="725" y1="344" x2="725" y2="408" marker-end="url(#ah)"/>
+          <text class="s" x="735" y="380">after COMMIT</text>
+          <rect class="box" x="660" y="410" width="130" height="56" rx="6"/>
+          <text class="t" x="725" y="434" text-anchor="middle">Dispatcher</text>
+          <text class="s" x="725" y="452" text-anchor="middle">retry · compensate</text>
+          <rect class="box" x="850" y="410" width="132" height="56" rx="6"/>
+          <text class="t" x="916" y="434" text-anchor="middle">Providers</text>
+          <text class="s" x="916" y="452" text-anchor="middle">payments · email · chat</text>
+          <line class="edge" x1="790" y1="438" x2="848" y2="438" marker-end="url(#ah)"/>
+          <text class="s" x="819" y="428" text-anchor="middle">send(key)</text>
+          <rect class="box" x="745" y="500" width="170" height="50" rx="6"/>
+          <text class="t" x="830" y="521" text-anchor="middle">Reconciler</text>
+          <text class="s" x="830" y="538" text-anchor="middle">mismatch → incident</text>
+          <line class="edge dashed" x1="790" y1="500" x2="745" y2="468"/>
+          <line class="edge dashed" x1="870" y1="500" x2="900" y2="468"/>
+          <text class="s" x="940" y="492">compares</text>
+        </svg>

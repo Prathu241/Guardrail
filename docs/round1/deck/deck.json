@@ -1,0 +1,21 @@
+{
+  "v": 4,
+  "createdOnFiles": {"v": 1, "at": "2026-10-14T09:30:00Z"},
+  "lists": "css",
+  "title": "Guardrail: Round 1 Submission",
+  "cover": "cover",
+  "order": ["cover", "problem", "crux", "architecture", "approach", "mvp", "stretch", "novelty", "evaluation", "demo", "plan", "risks", "close"],
+  "sections": {
+    "s1": {"description": "The problem we chose and why it matters", "start": "cover"},
+    "s2": {"description": "What is actually hard about it", "start": "crux"},
+    "s3": {"description": "The system we are building", "start": "architecture"},
+    "s4": {"description": "How it maps to the brief and where it goes further", "start": "mvp"},
+    "s5": {"description": "How we prove it works", "start": "evaluation"},
+    "s6": {"description": "Team, milestones and risks", "start": "plan"}
+  },
+  "faces": {
+    "ibm-plex-sans": {"family": "IBM Plex Sans", "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"},
+    "jetbrains-mono": {"family": "JetBrains Mono", "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap"}
+  },
+  "designSystems": []
+}

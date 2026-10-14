@@ -1,0 +1,28 @@
+<section id="demo" data-transition="fade" style="background:#F4F5F1;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#2A5BD7">What the demo shows</p>
+<h2 style="font-size:64px;font-weight:600;line-height:1.15">One valid action, one hallucination, one human decision</h2>
+</div>
+<div style="display:flex;gap:28px">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;border:1px solid #D9DDD6;border-top:8px solid #1B7A4A;border-radius:12px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;font-weight:600;color:#1B7A4A">ALLOW</p>
+<p style="font-size:26px;line-height:1.4;font-style:italic;color:#3D4A5C">"O-5001 arrived with a cracked lantern. Refund it?"</p>
+<p style="font-size:26px;line-height:1.4">Refund $49.99. The order is hers, delivered 11 days ago, and $49.99 is the lantern's price.</p>
+<p style="font-size:26px;line-height:1.4;color:#1B7A4A">Runs; the payment goes out after commit.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;border:1px solid #D9DDD6;border-top:8px solid #B42318;border-radius:12px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;font-weight:600;color:#B42318">BLOCK</p>
+<p style="font-size:26px;line-height:1.4;font-style:italic;color:#3D4A5C">"The tent from O-5008 arrived torn."</p>
+<p style="font-size:26px;line-height:1.4">The agent refunds O-5080. Blocked: no such order, closest real one O-5008.</p>
+<p style="font-size:26px;line-height:1.4;color:#B42318">Nothing runs; the agent fixes its call.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFFFF;border:1px solid #D9DDD6;border-top:8px solid #A85E06;border-radius:12px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;font-weight:600;color:#A85E06">ESCALATE</p>
+<p style="font-size:26px;line-height:1.4;font-style:italic;color:#3D4A5C">"The kayak from O-5005 leaks. Full refund."</p>
+<p style="font-size:26px;line-height:1.4">$649 is grounded but over the $500 limit. The run pauses; a manager approves.</p>
+<p style="font-size:26px;line-height:1.4;color:#A85E06">Re-checked, then runs.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6B7688">Each step is in the audit log with its checks, risk score, reviewer route and reasons. At the end the books reconcile with zero mismatches.</p>
+<aside>This is the finals demo plan, and it already runs offline: one valid refund, one blocked hallucinated order ID that the agent corrects, and one over-limit refund that a manager approves.</aside>
+</section>
