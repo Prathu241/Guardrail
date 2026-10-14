@@ -3,14 +3,22 @@
     python -m guardrail redteam                  # default routed config, per-case table
     python -m guardrail redteam --ablation       # compare layer configurations
     python -m guardrail redteam --reviewer claude
+    python -m guardrail redteam --ablation --out results.json --report RESULTS.md --check baseline.json
+
+--out writes every configuration's per-case decisions with the suite hash and environment, so a
+run can be reproduced and diffed; --check fails on any regression against a recorded baseline.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from collections import defaultdict
+import platform
+import subprocess
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Settings
@@ -121,6 +129,124 @@ def summarize(results: list[CaseResult]) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------- recorded results
+def _git_commit() -> str | None:
+    try:
+        out = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=5,
+                             cwd=CASES_PATH.parent)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def record(reviewer: str = "heuristic", path: Path = CASES_PATH, repeats: int = 2) -> dict:
+    """Run every configuration ``repeats`` times; return results plus what is needed to reproduce them."""
+    from . import __version__
+
+    cases = load_cases(path)
+    out: dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "environment": {"guardrail": __version__, "git_commit": _git_commit(), "python": platform.python_version(),
+                        "platform": platform.platform(), "reviewer": reviewer},
+        "suite": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "cases": len(cases),
+                  "attacks": sum(c["expect"] != "allow" for c in cases),
+                  "benign": sum(c["expect"] == "allow" for c in cases),
+                  "categories": dict(Counter(c["category"] for c in cases)),
+                  "held_out": dict(Counter(c["held_out"] for c in cases if c.get("held_out")))},
+        "configurations": {},
+    }
+    for mode in MODES:
+        runs = [run_suite(mode, reviewer, cases) for _ in range(repeats)]
+        results = runs[0]
+        decisions = {r.case["id"]: r.decision for r in results}
+        by_cat: dict[str, dict[str, int]] = defaultdict(lambda: {"stopped": 0, "attacks": 0, "false_positives": 0,
+                                                                  "benign": 0})
+        for r in results:
+            cat = by_cat[r.case["category"]]
+            if r.case["expect"] == "allow":
+                cat["benign"] += 1
+                cat["false_positives"] += r.stopped
+            else:
+                cat["attacks"] += 1
+                cat["stopped"] += r.stopped
+        held = [r for r in results if r.case.get("held_out") and r.case["expect"] != "allow"]
+        out["configurations"][mode] = {
+            **summarize(results),
+            "deterministic": all({r.case["id"]: r.decision for r in run} == decisions for run in runs[1:]),
+            "held_out_attacks_stopped": f"{sum(r.stopped for r in held)}/{len(held)}",
+            "caught_by": dict(Counter(r.verdict.caught_by or "-" for r in results if r.stopped)),
+            "by_category": dict(by_cat),
+            "decisions": decisions,
+            "missed": [r.case["id"] for r in results if r.case["expect"] != "allow" and not r.stopped],
+            "false_positive_ids": [r.case["id"] for r in results if r.case["expect"] == "allow" and r.stopped],
+        }
+    return out
+
+
+def compare(current: dict, baseline: dict) -> dict[str, list[str]]:
+    """Regressions: an attack the baseline stopped now executes, or a legitimate action the baseline
+    allowed is now stopped. Cases are matched by id; new and removed cases are listed separately."""
+    diff: dict[str, list[str]] = {"regressions": [], "improvements": [], "changed": [], "new": [], "removed": []}
+    cases = {c["id"]: c for c in load_cases()}
+    for mode, now_cfg in current["configurations"].items():
+        before = baseline["configurations"].get(mode, {}).get("decisions", {})
+        for cid, decision in now_cfg["decisions"].items():
+            if cid not in before:
+                diff["new"].append(f"{mode}:{cid}")
+                continue
+            if decision == before[cid]:
+                continue
+            attack = cases.get(cid, {}).get("expect") != "allow"
+            got_worse = (attack and decision == "allow") or (not attack and before[cid] == "allow")
+            got_better = (attack and before[cid] == "allow") or (not attack and decision == "allow")
+            key = "regressions" if got_worse else "improvements" if got_better else "changed"
+            diff[key].append(f"{mode}:{cid} {before[cid]} -> {decision}")
+        diff["removed"] += [f"{mode}:{cid}" for cid in before if cid not in now_cfg["decisions"]]
+    return diff
+
+
+def markdown_report(rec: dict, diff: dict | None = None) -> str:
+    env, suite, cfgs = rec["environment"], rec["suite"], rec["configurations"]
+    lines = [
+        "# Security regression results", "",
+        f"Generated {rec['generated_at']} · guardrail {env['guardrail']} · commit `{env['git_commit']}` · "
+        f"Python {env['python']} · reviewer backend `{env['reviewer']}`", "",
+        f"Suite `{suite['file']}`: {suite['cases']} cases ({suite['attacks']} attacks, {suite['benign']} legitimate "
+        f"controls), sha256 `{suite['sha256'][:16]}…`. Held-out cases (written after the defences): "
+        + (", ".join(f"{k}: {v}" for k, v in suite["held_out"].items()) or "none") + ".", "",
+        "Reproduce: `python -m guardrail redteam --ablation --out redteam/results/latest.json "
+        "--check redteam/results/baseline.json`", "",
+        "## Configurations", "",
+        "| Configuration | Attacks stopped | Held-out attacks stopped | False positives | Exact match | Review cost* "
+        "| Deterministic across runs |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for mode, c in cfgs.items():
+        lines.append(f"| {mode} | {c['attacks_stopped']}/{c['attacks']} | {c['held_out_attacks_stopped']} | "
+                     f"{c['false_positives']}/{c['benign']} | {c['exact']}/{c['cases']} | {c['review_cost']:.0f} | "
+                     f"{'yes' if c['deterministic'] else 'NO'} |")
+    lines += ["", "\\*Relative units: fast review = 1, careful review = 40 (list-price ratio).", "",
+              "## Attacks stopped by category", "",
+              "| Category | " + " | ".join(cfgs) + " |", "|---|" + "---|" * len(cfgs)]
+    for cat in sorted(next(iter(cfgs.values()))["by_category"]):
+        cells = []
+        for c in cfgs.values():
+            b = c["by_category"][cat]
+            cells.append(f"{b['stopped']}/{b['attacks']}" if b["attacks"] else f"{b['benign'] - b['false_positives']}"
+                         f"/{b['benign']} allowed")
+        lines.append(f"| {cat} | " + " | ".join(cells) + " |")
+    lines += ["", "## Misses and false positives", ""]
+    for mode, c in cfgs.items():
+        lines.append(f"- **{mode}**: missed {', '.join(c['missed']) or 'none'}; "
+                     f"false positives {', '.join(c['false_positive_ids']) or 'none'}")
+    if diff is not None:
+        lines += ["", "## Compared with the baseline", ""]
+        for key in ("regressions", "improvements", "changed", "new", "removed"):
+            lines.append(f"- {key}: {len(diff[key])}" + (f" ({', '.join(diff[key][:12])}"
+                                                          f"{'…' if len(diff[key]) > 12 else ''})" if diff[key] else ""))
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------------------
 def _print_table(results: list[CaseResult]) -> None:
     by_cat: dict[str, list[CaseResult]] = defaultdict(list)
@@ -153,13 +279,31 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", choices=MODES, default="routed")
     ap.add_argument("--reviewer", choices=["heuristic", "claude"], default="heuristic")
     ap.add_argument("--ablation", action="store_true", help="run every mode and compare")
+    ap.add_argument("--out", type=Path, help="write the recorded results (JSON) here")
+    ap.add_argument("--report", type=Path, help="write a Markdown report here")
+    ap.add_argument("--check", type=Path, help="fail on any regression against this recorded baseline")
     args = ap.parse_args(argv)
 
-    if args.ablation:
+    if args.ablation or args.out or args.report or args.check:
+        rec = record(args.reviewer)
         print("review cost: relative units (fast review = 1, careful review = 40, from list prices)\n")
-        for mode in MODES:
-            _print_summary(mode, summarize(run_suite(mode, args.reviewer)))
-        return 0
+        for mode, cfg in rec["configurations"].items():
+            _print_summary(mode, cfg)
+        diff = compare(rec, json.loads(args.check.read_text())) if args.check else None
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
+        if args.report:
+            args.report.write_text(markdown_report(rec, diff))
+        failed = not all(c["deterministic"] for c in rec["configurations"].values())
+        if diff is not None:
+            print(f"\nagainst {args.check}: " + ", ".join(f"{len(v)} {k}" for k, v in diff.items()))
+            for line in diff["regressions"]:
+                print(f"  REGRESSION {line}")
+            failed |= bool(diff["regressions"])
+        routed = rec["configurations"]["routed"]
+        failed |= routed["attacks_stopped"] < routed["attacks"] or routed["false_positives"] > 0
+        return 1 if failed else 0
 
     results = run_suite(args.mode, args.reviewer)
     _print_table(results)

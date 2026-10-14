@@ -173,6 +173,12 @@ INJECTION_PATTERNS = [
     # text that addresses the verification layer itself is never legitimate tool input
     r"\b(reviewer|auditor|guardrail|verifier|validator|checker)s?\b[^.]{0,60}\b(approve|allow|grounded|pass|accept|ignore)",
     r"\b(mark|treat|consider) (this|it|the action) as (grounded|approved|verified|safe)",
+    # forged verdicts and authority: a reviewer's JSON, chat-role markers, claimed sign-offs
+    r"\"?\b(grounded|confidence|evidence|decision)\"?\s*:\s*(true|false|\d|\[|\"?(allow|approve))",
+    r"\b(system|assistant|developer)\s*:\s",
+    r"\b(approval|authori[sz]ation|sign-?off) (has been |was |is |already )?(granted|given|confirmed|obtained)",
+    r"\b(pre-?)?(approved|authori[sz]ed|signed off) by (a |the |my |our )?(manager|supervisor|admin|staff|team lead|"
+    r"compliance|support lead)",
     r"'\s*or\s+'?1'?\s*=\s*'?1",
     r";\s*(drop|delete|truncate|alter|update|insert)\s+",
     r"\bunion\s+select\b",
@@ -496,10 +502,11 @@ def _message_scope(action: ProposedAction, kb: KnowledgeBase) -> tuple[dict | No
 
 def no_cross_customer_disclosure(action, ctx, kb, session):
     customer, text = _message_scope(action, kb)
-    if action.tool == "send_email" and customer is None:
-        return None  # internal mail; recipient_known handles unknown addresses
+    if customer is None and action.tool == "send_email" and ctx.customer_id:
+        # Internal mail from a customer's conversation may carry that customer's data, nobody else's.
+        customer = kb.customer(ctx.customer_id)
     if customer is None:
-        return None
+        return None  # internal operations mail; recipient_known handles unknown addresses
     own = {o["id"] for o in kb.orders_for(customer["id"])}
     leaked_orders = sorted(set(ORDER_ID_RE.findall(text)) - own)
     others = [c for c in kb.all_customers() if c["id"] != customer["id"]]
@@ -695,13 +702,21 @@ def claims_supported(action, ctx, kb, session):
 
 
 URL_RE = re.compile(r"\b(?:https?://|www\.)[^\s<>\"')]+", re.IGNORECASE)
+UNSAFE_SCHEME_RE = re.compile(r"\b(?:javascript|data|vbscript|file|ftp|blob):", re.IGNORECASE)
+# A domain written without a scheme ("confirm at acme-support.com") is still a link to the reader.
+BARE_DOMAIN_RE = re.compile(
+    r"\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|co|io|info|biz|app|dev|xyz|me|us|uk|eu|de|ru|cn|top|"
+    r"site|online|shop|store|link|click|live|ly|gl|support|help|example)\b", re.IGNORECASE)
 
 
 def outbound_links_allowed(action, ctx, kb, session):
     """Links in customer-facing messages may only point at the company's own domain."""
     _, text = _message_scope(action, kb)
-    for url in URL_RE.findall(text):
-        host = re.sub(r"^(https?://)?(www\.)?", "", url.lower()).split("/")[0].split(":")[0]
+    if m := UNSAFE_SCHEME_RE.search(text):
+        return _fail("outbound_links_allowed", f"message contains a {m.group(0)} URI, which is never sent to customers")
+    hosts = [re.sub(r"^(https?://)?(www\.)?", "", u.lower()).split("/")[0].split(":")[0] for u in URL_RE.findall(text)]
+    hosts += [d.lower() for d in BARE_DOMAIN_RE.findall(EMAIL_RE.sub(" ", URL_RE.sub(" ", text)))]
+    for host in hosts:
         if host != kb.internal_domain and not host.endswith("." + kb.internal_domain):
             return _fail("outbound_links_allowed", f"message links to {host}, which is not a company domain (phishing?)")
     return _ok("outbound_links_allowed", "no external links")
