@@ -10,11 +10,12 @@ Both share the approval queue (/v1/approvals) and the audit log (/v1/audit, /v1/
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -109,12 +110,15 @@ def create_app(app: App | None = None) -> FastAPI:
         try:
             return app.conversations.send(conversation_id, body.message)
         except ConversationError as e:
-            raise HTTPException(409 if "waiting" in str(e) else 404, str(e)) from e
+            raise HTTPException(404 if "not found" in str(e) else 409, str(e)) from e
 
     # ---- sidecar mode -----------------------------------------------------------
-    def _parse(req: GuardRequest) -> tuple[ProposedAction, AgentContext]:
+    def _parse(req: GuardRequest, action_id: str | None = None) -> tuple[ProposedAction, AgentContext]:
+        action = ProposedAction(req.action.tool, req.action.args, req.action.rationale)
+        if action_id:
+            action = ProposedAction(action.tool, action.args, action.rationale, action_id)
         return (
-            ProposedAction(req.action.tool, req.action.args, req.action.rationale),
+            action,
             AgentContext(req.context.conversation, req.context.customer_id, req.context.conversation_id,
                          req.context.observations),
         )
@@ -125,11 +129,45 @@ def create_app(app: App | None = None) -> FastAPI:
         return _verdict_json(app.guard.evaluate(*_parse(req)))
 
     @api.post("/v1/actions/execute", tags=["sidecar"])
-    def execute(req: GuardRequest) -> dict:
-        """Evaluate and, if allowed, execute. Escalations return an approval_id."""
-        result = app.guard.execute(*_parse(req))
+    def execute(req: GuardRequest, response: Response,
+                idempotency_key: str | None = Header(None, max_length=200)) -> dict:
+        """Evaluate and, if allowed, execute. Escalations return an approval_id.
+
+        Send an `Idempotency-Key` header to make retries safe: a repeated request with the same key
+        and body returns the original response (header `Idempotent-Replay: true`) and never acts twice.
+        """
+        if not idempotency_key:
+            return _execute(req)
+        digest = hashlib.sha256(req.model_dump_json().encode()).hexdigest()
+        state, row = app.guard.idempotency.begin(idempotency_key, digest)
+        if state == "mismatch":
+            raise HTTPException(422, "Idempotency-Key was already used with a different request")
+        if state == "in_progress":
+            raise HTTPException(409, f"a request with this Idempotency-Key is in progress (action {row['action_id']});"
+                                     " retry later or inspect GET /v1/actions/{action_id}")
+        if state == "done":
+            response.headers["Idempotent-Replay"] = "true"
+            return row["response"]
+        try:
+            out = _execute(req, row["action_id"])
+        except Exception:
+            app.guard.idempotency.abandon(idempotency_key)
+            raise
+        app.guard.idempotency.finish(idempotency_key, out)
+        return out
+
+    def _execute(req: GuardRequest, action_id: str | None = None) -> dict:
+        result = app.guard.execute(*_parse(req, action_id))
         return {"verdict": _verdict_json(result.verdict), "executed": result.executed,
                 "output": result.output, "approval_id": result.approval_id}
+
+    @api.get("/v1/actions/{action_id}", tags=["sidecar"])
+    def get_action(action_id: str) -> dict:
+        """The audit record of one evaluated action: decision, reasons, whether and when it executed."""
+        row = app.guard.audit.get(action_id)
+        if row is None:
+            raise HTTPException(404, f"action {action_id} not found")
+        return row
 
     # ---- approvals ----------------------------------------------------------------
     @api.get("/v1/approvals", tags=["approvals"])
@@ -156,6 +194,14 @@ def create_app(app: App | None = None) -> FastAPI:
     @api.post("/v1/approvals/{approval_id}/reject", tags=["approvals"])
     def reject(approval_id: str, body: Decision) -> dict:
         return _decide(approval_id, False, body)
+
+    @api.post("/v1/approvals/{approval_id}/revoke", tags=["approvals"])
+    def revoke(approval_id: str, body: Decision) -> dict:
+        """Withdraw a pending or approved approval before the action executes."""
+        try:
+            return app.approvals.revoke(approval_id, body.reviewer, body.note)
+        except ApprovalError as e:
+            raise HTTPException(404 if "not found" in str(e) else 409, str(e)) from e
 
     # ---- observability ----------------------------------------------------------
     @api.get("/v1/audit", tags=["observability"])

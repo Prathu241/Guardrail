@@ -11,8 +11,8 @@
   execute         allowed / approved calls are committed (re-verified inside the DB transaction);
                   blocked / rejected ones are answered with feedback the agent can act on
 
-Side effects happen only in `execute`, and it skips actions the audit log already marks as
-executed, so replaying the node after a crash cannot double-execute anything.
+Side effects happen only in `execute`, through Guardrail.commit, which is idempotent per action
+id: replaying the node after a crash returns the recorded result instead of executing again.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from ..guard import Guardrail, feedback_for_agent
+from ..ledger import ApprovalError
 from ..models import AgentContext, Decision, ExecutionResult, ProposedAction, Verdict
 
 SYSTEM_PROMPT = """\
@@ -149,24 +150,31 @@ def build_agent_graph(model: Any, guard: Guardrail, checkpointer=None):
             action = ProposedAction(v["tool"], v["args"], "", v["action_id"])
             verdict = Verdict(action, Decision(v["decision"]), caught_by=v["caught_by"])
             approval = guard.approvals.get(p["approval_id"]) if p["approval_id"] else None
-            already = guard.audit.get(action.id)
+            refused = None
 
-            if already and already["executed"]:  # replayed after a crash: reuse, don't redo
-                result = ExecutionResult(verdict, True, already["output"])
-            elif verdict.decision is Decision.ALLOW:
+            # commit() is idempotent per action id, so replaying this node after a crash is safe.
+            if verdict.decision is Decision.ALLOW:
                 result = guard.commit(verdict, ctx)
             elif approval and approval["status"] == "approved":
-                result = guard.commit(verdict, ctx, approved=True)
-                guard.approvals.set_result(approval["id"], {"executed": result.executed, "output": result.output})
+                try:
+                    result = guard.commit(verdict, ctx, approval["id"])
+                except ApprovalError as e:  # revoked or expired between the decision and now
+                    result, refused = ExecutionResult(verdict, executed=False), str(e)
+                if not result.executed:
+                    guard.approvals.set_result(approval["id"], {"executed": False, "output": result.output,
+                                                                "reasons": result.verdict.reasons or [refused]})
+                approval = guard.approvals.get(approval["id"])
             else:
                 result = ExecutionResult(verdict, executed=False)
 
             content = feedback_for_agent(result, recorded_reasons=v["reasons"])
-            if approval and approval["status"] == "rejected":
-                content = (
-                    f"REJECTED by {approval['decided_by']}" + (f": {approval['note']}" if approval["note"] else "")
-                    + ". The action was NOT performed."
-                )
+            if approval and approval["status"] in ("rejected", "revoked", "expired"):
+                by = approval["revoked_by"] if approval["status"] == "revoked" else approval["decided_by"]
+                note = approval["revoke_note"] if approval["status"] == "revoked" else approval["note"]
+                content = (f"{approval['status'].upper()}" + (f" by {by}" if by else "") + (f": {note}" if note else "")
+                           + ". The action was NOT performed.")
+            elif refused:
+                content = f"NOT PERFORMED: {refused}."
             messages.append(
                 ToolMessage(
                     content=content,

@@ -3,7 +3,7 @@
 Tables
   system of record   meta, customers, orders, products, policies, staff
   side effects       outbox (emails and chat replies the tools sent)
-  guardrail state    conversations, audit, approvals
+  guardrail state    conversations, audit, approvals, idempotency (sidecar request keys)
 
 SQLite keeps the project dependency-free and runnable anywhere; every query goes through
 this module, so swapping in Postgres means reimplementing ``Database`` only.
@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS audit (
     executed INTEGER NOT NULL DEFAULT 0,
     output TEXT,
     approval_id TEXT,
-    injected_fault TEXT);
+    injected_fault TEXT,
+    executed_at TEXT);
 CREATE INDEX IF NOT EXISTS audit_conversation ON audit(conversation_id);
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -81,12 +82,35 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_by TEXT,
     note TEXT,
     decided_at TEXT,
-    result TEXT);
+    result TEXT,
+    waives TEXT NOT NULL DEFAULT '[]',
+    revoked_by TEXT,
+    revoked_at TEXT,
+    revoke_note TEXT);
 CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status);
+
+CREATE TABLE IF NOT EXISTS idempotency (
+    key TEXT PRIMARY KEY,
+    request_hash TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    response TEXT,
+    created_at TEXT NOT NULL);
 """
+
+# Columns added after a table first shipped: (table, column, definition). Applied to existing
+# databases on open, so an older guardrail.db keeps working after an upgrade.
+MIGRATIONS = [
+    ("audit", "executed_at", "TEXT"),
+    ("approvals", "waives", "TEXT NOT NULL DEFAULT '[]'"),
+    ("approvals", "revoked_by", "TEXT"),
+    ("approvals", "revoked_at", "TEXT"),
+    ("approvals", "revoke_note", "TEXT"),
+]
 
 JSON_COLUMNS = {
     "items", "params", "args", "route", "reasons", "warnings", "checks", "reviews", "output", "context", "result",
+    "waives", "response",
 }
 
 
@@ -117,7 +141,8 @@ class Database:
 
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        # Other connections (workers, processes) may hold the write lock; wait for it rather than fail.
+        self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
@@ -125,6 +150,13 @@ class Database:
         self._lock = threading.RLock()
         self._depth = 0
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        for table, column, definition in MIGRATIONS:
+            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @classmethod
     def seeded(cls, path: str | Path = ":memory:", seed_dir: str | Path = SEED_DIR) -> Database:
@@ -200,6 +232,6 @@ class Database:
     def reset_state(self) -> None:
         """Forget conversations, audit and approvals; reseed the system of record."""
         with self.transaction():
-            for table in ("audit", "approvals", "conversations", "outbox"):
+            for table in ("audit", "approvals", "conversations", "outbox", "idempotency"):
                 self.run(f"DELETE FROM {table}")
             self.seed()

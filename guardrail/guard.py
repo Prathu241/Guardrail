@@ -7,8 +7,9 @@ Lifecycle of one proposed action
                     database transaction, so nothing that changed since evaluation slips through;
                     then verify the tool's postcondition and roll back if the effect is wrong
        ESCALATE  -> request_approval(): park it in the approval queue; a human decides later and
-                    commit(approved=True) runs it (still re-checked; only the outcomes that asked
-                    for a human - UNVERIFIABLE / NEEDS_APPROVAL - are waived)
+                    commit(approval_id=...) runs it (still re-checked; only the checks that asked the
+                    approver - their UNVERIFIABLE / NEEDS_APPROVAL outcomes - are waived, and only
+                    while the approval is approved, unexpired and unrevoked)
        BLOCK     -> nothing runs; the reasons go back to the agent
 """
 
@@ -21,7 +22,7 @@ from pydantic import ValidationError
 from .checks import GENERIC_CHECKS, Session
 from .config import Settings
 from .knowledge_base import KnowledgeBase
-from .ledger import ApprovalError, ApprovalQueue, AuditLog
+from .ledger import ApprovalError, ApprovalQueue, AuditLog, IdempotencyStore
 from .models import (
     HUMAN_OUTCOMES,
     AgentContext,
@@ -45,6 +46,7 @@ class Guardrail:
         router: RiskRouter | None = None,
         tools: dict[str, ToolSpec] | None = None,
         block_confidence: float = 0.7,
+        approval_ttl_hours: float = 24.0,
     ):
         self.kb = kb
         self.db = kb.db
@@ -52,13 +54,15 @@ class Guardrail:
         self.router = router or router_for(Settings())
         self.block_confidence = block_confidence
         self.audit = AuditLog(self.db)
-        self.approvals = ApprovalQueue(self.db)
+        self.approvals = ApprovalQueue(self.db, approval_ttl_hours)
+        self.idempotency = IdempotencyStore(self.db)
 
     @classmethod
     def from_settings(cls, settings: Settings, db: Database | None = None) -> Guardrail:
         db = db or Database.seeded(settings.db_path)
         router = router_for(settings)
-        return cls(KnowledgeBase(db, settings.today_date), router, block_confidence=settings.block_confidence)
+        return cls(KnowledgeBase(db, settings.today_date), router, block_confidence=settings.block_confidence,
+                   approval_ttl_hours=settings.approval_ttl_hours)
 
     @classmethod
     def in_memory(cls, router: RiskRouter | None = None) -> Guardrail:
@@ -135,20 +139,38 @@ class Guardrail:
         return Verdict(action, decision, results, risk, outcome.reviews, caught_by=outcome.decided_by)
 
     # ------------------------------------------------------------------ commit
-    def commit(self, verdict: Verdict, ctx: AgentContext, approved: bool = False) -> ExecutionResult:
-        """Execute an allowed (or human-approved) action, re-verifying inside the write transaction."""
-        if verdict.decision is Decision.BLOCK or (verdict.decision is Decision.ESCALATE and not approved):
+    def commit(self, verdict: Verdict, ctx: AgentContext, approval_id: str | None = None) -> ExecutionResult:
+        """Execute an allowed (or human-approved) action, re-verifying inside the write transaction.
+
+        Idempotent per action id: committing an action that already executed returns the recorded
+        result and does nothing, however many callers race to commit it.
+        Raises ApprovalError if ``approval_id`` does not (or no longer) authorize the action.
+        """
+        if verdict.decision is Decision.BLOCK or (verdict.decision is Decision.ESCALATE and approval_id is None):
             raise ValueError(f"cannot commit a {verdict.decision.value} verdict without approval")
         spec, action = self.tools[verdict.action.tool], verdict.action
+        if self.audit.get(action.id) is None:
+            raise ValueError(f"action {action.id} was never evaluated")
         try:
             with self.db.transaction():
+                prior = self.audit.get(action.id)
+                if prior["executed"]:  # a retry, a replayed graph node, or a racing worker
+                    return ExecutionResult(verdict, executed=True, output=prior["output"])
+                waived: set[str] = set()
+                if approval_id is not None:
+                    waived = set(self.approvals.authorizes(approval_id, action.id)["waives"])
                 results = self._checks(spec, action, ctx)
                 stale = [r for r in results if r.outcome is Outcome.FAIL]
-                # A human approval waives only the outcomes that asked for a human.
-                stale += [] if approved else [r for r in results if r.outcome in HUMAN_OUTCOMES]
+                # A human approval waives only the checks that asked the approver, nothing new since.
+                unapproved = [r for r in results if r.outcome in HUMAN_OUTCOMES and r.check not in waived]
+                if unapproved and approval_id is not None:
+                    names = ", ".join(sorted({r.check for r in unapproved}))
+                    stale.append(CheckResult("approval_scope", Outcome.FAIL,
+                                             f"{names} not covered by approval {approval_id}; a new approval is needed"))
+                stale += unapproved
                 if stale:
-                    overruled = Verdict(action, Decision.BLOCK, results, verdict.risk, verdict.reviews,
-                                        caught_by="commit-recheck")
+                    overruled = Verdict(action, Decision.BLOCK, results + [r for r in stale if r not in results],
+                                        verdict.risk, verdict.reviews, caught_by="commit-recheck")
                     self.audit.overrule(overruled)
                     return ExecutionResult(overruled, executed=False)
                 before = spec.snapshot(self.kb, action.args) if spec.snapshot else None
@@ -156,6 +178,10 @@ class Guardrail:
                 if spec.postcondition and (problem := spec.postcondition(self.kb, action.args, before, output)):
                     raise PostconditionError(problem)  # rolls the write back
                 self.audit.mark_executed(action.id, output)
+                if approval_id is not None:
+                    self.approvals.set_result(approval_id, {"executed": True, "output": output})
+        except ApprovalError:
+            raise
         except Exception as e:  # the transaction rolled back; nothing was written
             self.audit.mark_failed(action.id, f"{type(e).__name__}: {e}")
             return ExecutionResult(verdict, executed=False, output={"error": f"{type(e).__name__}: {e}"})
@@ -169,13 +195,13 @@ class Guardrail:
     def commit_approval(self, approval_id: str) -> ExecutionResult:
         """Run an action a human approved (sidecar mode; the agent graph does this itself)."""
         row = self.approvals.get(approval_id)
-        if row is None or row["status"] != "approved":
-            raise ApprovalError(f"approval {approval_id} is not approved")
+        if row is None:
+            raise ApprovalError(f"approval {approval_id} not found")
         action, ctx = ApprovalQueue.action_of(row)
-        verdict = Verdict(action, Decision.ESCALATE)
-        result = self.commit(verdict, ctx, approved=True)
-        self.approvals.set_result(approval_id, {"executed": result.executed, "output": result.output,
-                                                "reasons": result.verdict.reasons})
+        result = self.commit(Verdict(action, Decision.ESCALATE), ctx, approval_id)
+        if not result.executed:
+            self.approvals.set_result(approval_id, {"executed": False, "output": result.output,
+                                                    "reasons": result.verdict.reasons})
         return result
 
     # ------------------------------------------------------------------ one-shot

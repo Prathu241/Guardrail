@@ -59,7 +59,7 @@ pre { padding: 8px; white-space: pre-wrap; margin: 6px 0 0; }
 .pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 9px; text-transform: uppercase; }
 .pill.allow { background: var(--allow-bg); color: var(--allow); } .pill.block { background: var(--block-bg); color: var(--block); }
 .pill.escalate, .pill.pending { background: var(--esc-bg); color: var(--esc); } .pill.fault { background: var(--fault-bg); color: var(--fault); }
-.pill.approved { background: var(--allow-bg); color: var(--allow); } .pill.rejected { background: var(--block-bg); color: var(--block); }
+.pill.approved { background: var(--allow-bg); color: var(--allow); } .pill.rejected, .pill.revoked, .pill.expired { background: var(--block-bg); color: var(--block); }
 ul.reasons { margin: 6px 0 0; padding-left: 18px; }
 .banner { background: var(--esc-bg); color: var(--esc); border-radius: 8px; padding: 10px; margin: 8px 0; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -308,8 +308,19 @@ async function loadApprovals() {
   const [pending, all] = await Promise.all([api("/v1/approvals?status=pending"), api("/v1/approvals?status=all")]);
   $("#approvals").replaceChildren(...(pending.length ? pending.map((a) => approvalCard(a, false)) : [el("div", { class: "empty" }, "Nothing waiting for approval.")]));
   const decided = all.filter((a) => a.status !== "pending");
-  $("#decided").replaceChildren(decided.length ? table(["Approval", "Tool", "Args", "Status", "By", "Note"],
-    decided.map((a) => [a.id, a.tool, el("code", {}, json(a.args)), pill(a.status), a.decided_by, a.note || ""])) : el("div", { class: "small" }, "None yet."));
+  const revoke = async (a) => {
+    const by = $("#reviewer").value.trim();
+    if (!by) { alert("Enter your name in the reviewer box first."); return; }
+    if (!confirm(`Revoke ${a.id}? The ${a.tool} action will not run.`)) return;
+    try {
+      await api(`/v1/approvals/${a.id}/revoke`, { method: "POST", body: JSON.stringify({ reviewer: by, note: "" }) });
+      loadApprovals(); loadConvs(); refreshBadge();
+    } catch (e) { alert(e.message); }
+  };
+  const outcome = (a) => a.status === "revoked" ? `by ${a.revoked_by}` : a.result ? (a.result.executed ? "executed" : "not executed")
+    : a.status === "approved" ? el("button", { class: "no", on: { click: () => revoke(a) } }, "Revoke") : "";
+  $("#decided").replaceChildren(decided.length ? table(["Approval", "Tool", "Args", "Status", "By", "Note", "Outcome"],
+    decided.map((a) => [a.id, a.tool, el("code", {}, json(a.args)), pill(a.status), a.decided_by, a.note || a.revoke_note || "", outcome(a)])) : el("div", { class: "small" }, "None yet."));
 }
 async function refreshBadge() {
   try { $("#apr-count").textContent = (await api("/v1/approvals?status=pending")).length; } catch (_) {}

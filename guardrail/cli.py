@@ -132,8 +132,12 @@ def cmd_approvals(app: App, args) -> int:
         if not rows:
             print("no approvals")
         return 0
-    res = app.approvals.decide(args.id, args.action == "approve", args.reviewer_name, args.note)
-    print(f"{res['approval']['id']}: {res['approval']['status']} by {res['approval']['decided_by']}")
+    if args.action == "revoke":
+        res = app.approvals.revoke(args.id, args.reviewer_name, args.note)
+        print(f"{res['approval']['id']}: revoked by {res['approval']['revoked_by']}")
+    else:
+        res = app.approvals.decide(args.id, args.action == "approve", args.reviewer_name, args.note)
+        print(f"{res['approval']['id']}: {res['approval']['status']} by {res['approval']['decided_by']}")
     if res["conversation"]:
         print_conversation(res["conversation"])
     return 0
@@ -186,10 +190,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("chat", help="interactive conversation with the guarded agent")
     p.add_argument("--customer")
     p.add_argument("--reviewer-name", dest="reviewer_name", default="cli-reviewer")
-    p = sub.add_parser("approvals", help="list or decide escalated actions")
-    p.add_argument("action", choices=["list", "approve", "reject"])
+    p = sub.add_parser("approvals", help="list, decide or revoke escalated actions")
+    p.add_argument("action", choices=["list", "approve", "reject", "revoke"])
     p.add_argument("id", nargs="?")
-    p.add_argument("--status", default="pending", help="pending | approved | rejected | all")
+    p.add_argument("--status", default="pending", help="pending | approved | rejected | revoked | expired | all")
     p.add_argument("--reviewer-name", dest="reviewer_name", default="cli-reviewer")
     p.add_argument("--note", default="")
     p = sub.add_parser("audit", help="print the audit log")
@@ -215,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         return redteam_main(["--mode", args.mode] + (["--ablation"] if args.ablation else [])
                             + (["--reviewer", args.reviewer] if args.reviewer else []) + rest)
     if args.command == "approvals" and args.action != "list" and not args.id:
-        ap.error("approvals approve/reject needs an approval id")
+        ap.error(f"approvals {args.action} needs an approval id")
     if args.command == "chaos":  # a throwaway database, every turn corrupted unless told otherwise
         args.db = args.db or ":memory:"
         args.fault_rate = 1.0 if args.fault_rate is None else args.fault_rate
