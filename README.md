@@ -52,6 +52,11 @@ export GUARDRAIL_AGENT=claude      # Claude Opus 5.5 as the support agent
 ## Using it
 
 ### Dashboard (`guardrail serve`)
+
+| Agent run, every tool call with its verdict | Run paused for human approval |
+|---|---|
+| ![console](docs/img/dashboard-console.png) | ![approval](docs/img/dashboard-approval.png) |
+
 - **Console.** Chat as a customer, or as internal ops. Every tool call shows its decision,
   risk, review route and reasons. A paused run shows an inline **Approve / Reject** banner.
 - **Approvals.** The pending queue and the decision history.
