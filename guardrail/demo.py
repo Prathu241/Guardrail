@@ -3,7 +3,8 @@
     python -m guardrail demo
 
 Scenario 1  A hallucinating agent (scripted, so it is reproducible) works a refund ticket.
-            The guardrail blocks each bad action and the agent corrects itself.
+            The guardrail blocks each bad action; after three failed refund attempts the agent
+            loses autonomy and a human confirms its corrected refund.
 Scenario 2  A legitimate refund above the approval limit: the run pauses, a manager
             approves it, the run resumes and the refund commits.
 Scenario 3  Chaos run: the rule-based agent works sample tickets while a fault injector
@@ -94,6 +95,15 @@ def scenario_hallucinations(settings: Settings) -> dict:
     print(f"{C.BOLD}Customer (C-1001):{C.END} {TICKET}\n")
     conv = app.conversations.start(TICKET, "C-1001")
     print_conversation(conv)
+    while conv["status"] == "awaiting_approval":
+        # After 3 blocked refund attempts the agent has lost its autonomy for refunds: a human
+        # now confirms even a correct one. Here the manager checks it and approves.
+        seen = len(conv["guard_log"])
+        for a in conv["pending_approvals"]:
+            print(f"\n  {C.BOLD}morgan.lee reviews {a['id']}: ${a['args'].get('amount', 0):.2f} for the lantern is "
+                  f"correct -> approve{C.END}\n")
+            conv = app.approvals.decide(a["id"], True, "morgan.lee", "checked: lantern price")["conversation"]
+        print_conversation(conv, since_log=seen)
     log = conv["guard_log"]
     order = app.guard.kb.order("O-5001")
     stopped = sum(e["args"].get("amount", 0) for e in log

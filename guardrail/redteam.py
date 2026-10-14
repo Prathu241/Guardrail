@@ -13,10 +13,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import Settings
 from .guard import Guardrail
 from .knowledge_base import KnowledgeBase
 from .models import AgentContext, Decision, ProposedAction, ReviewResult, Verdict
-from .reviewers import ReviewRequest, claude_reviewers, heuristic_reviewers
+from .reviewers import ReviewRequest, reviewers_for
 from .risk import RiskRouter
 
 CASES_PATH = Path(__file__).resolve().parents[1] / "redteam" / "cases.json"
@@ -33,9 +34,9 @@ class AlwaysGrounded:
 
 
 def make_router(mode: str, reviewer: str = "heuristic") -> RiskRouter:
-    fast, careful = claude_reviewers() if reviewer == "claude" else heuristic_reviewers()
+    fast, careful, critical = reviewers_for(Settings(reviewer=reviewer))
     if mode == "routed":
-        return RiskRouter(fast, careful)
+        return RiskRouter(fast, careful, critical=critical)
     if mode == "fast-only":
         return RiskRouter(fast, fast, threshold=float("inf"), cascade_below_confidence=0.0)
     if mode == "careful-only":
@@ -69,8 +70,11 @@ class CaseResult:
             return False
         if self.check_route and "expect_route" in self.case and self.verdict.route != self.case["expect_route"]:
             return False
-        if self.case.get("expect_caught_by") == "reviewer":
+        expected_layer = self.case.get("expect_caught_by")
+        if expected_layer == "reviewer":
             return self.verdict.caught_by not in (None, "deterministic")
+        if expected_layer == "deterministic":
+            return self.verdict.caught_by == "deterministic"
         return True
 
     @property
@@ -84,11 +88,17 @@ class CaseResult:
 
 def run_case(case: dict, router: RiskRouter, check_route: bool = True) -> CaseResult:
     guard = Guardrail(KnowledgeBase.in_memory(), router)
-    ctx = AgentContext(case["context"]["conversation"], case["context"].get("customer_id"))
+    ctx = AgentContext(
+        case["context"]["conversation"],
+        case["context"].get("customer_id"),
+        observations=case["context"].get("observations", []),
+    )
     for step in case.get("setup", []):
         result = guard.execute(_action(step), ctx)
-        if not result.executed:
-            raise RuntimeError(f"{case['id']}: setup step was not allowed: {result.verdict.reasons}")
+        wanted = step.get("expect", "allow")
+        if result.verdict.decision.value != wanted or (wanted == "allow" and not result.executed):
+            raise RuntimeError(f"{case['id']}: setup step expected {wanted}, got {result.verdict.decision.value}: "
+                               f"{result.verdict.reasons}")
     return CaseResult(case, guard.evaluate(_action(case["action"]), ctx), check_route)
 
 

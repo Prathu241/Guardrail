@@ -1,20 +1,10 @@
 [
-  {"id": "POL-REFUND-WINDOW", "title": "Refund window",
-   "text": "Refunds are available within 30 days of delivery. Items must be returned unused or be defective on arrival.",
-   "params": {"refund_window_days": 30}},
-  {"id": "POL-REFUND-LIMIT", "title": "Refund approval limit",
-   "text": "Support agents may issue refunds up to $500.00 per order without approval. Larger refunds require manager approval.",
-   "params": {"refund_approval_limit": 500.00}},
-  {"id": "POL-SHIPPING", "title": "Shipping",
-   "text": "Standard shipping is free on orders over $75. Expedited shipping costs $15.",
-   "params": {}},
-  {"id": "POL-WARRANTY", "title": "Warranty",
-   "text": "Lanterns and stoves carry a 1-year manufacturer warranty covering defects. Warranty claims are fulfilled by replacement, not refund.",
-   "params": {}},
-  {"id": "POL-PRIVACY", "title": "Customer privacy",
-   "text": "Agents must never share one customer's order details or contact information with another customer.",
-   "params": {}},
-  {"id": "POL-INVENTORY", "title": "Inventory adjustments",
-   "text": "Single inventory adjustments larger than 50 units require warehouse manager approval. Stock can never go below zero.",
-   "params": {"inventory_max_adjustment": 50}}
+  {"id": "POL-REFUND-WINDOW", "title": "Refund window", "text": "Refunds are available within 30 days of delivery. Items must be returned unused or be defective on arrival.", "params": {"refund_window_days": 30}},
+  {"id": "POL-REFUND-LIMIT", "title": "Refund approval limit", "text": "Support agents may issue refunds up to $500.00 per order without approval. Larger refunds require manager approval.", "params": {"refund_approval_limit": 500.0}},
+  {"id": "POL-REFUND-PROCESSING", "title": "Refund processing", "text": "Approved refunds are returned to the original payment method within 5 to 10 business days.", "params": {}},
+  {"id": "POL-REFUND-VELOCITY", "title": "Refund velocity", "text": "Total refunds to a single customer may not exceed $600.00 in any 24-hour period without manager approval.", "params": {"customer_daily_refund_limit": 600.0}},
+  {"id": "POL-SHIPPING", "title": "Shipping", "text": "Standard shipping is free on orders over $75. Expedited shipping costs $15.", "params": {}},
+  {"id": "POL-WARRANTY", "title": "Warranty", "text": "Lanterns and stoves carry a 1-year manufacturer warranty covering defects. Warranty claims are fulfilled by replacement, not refund.", "params": {}},
+  {"id": "POL-PRIVACY", "title": "Customer privacy", "text": "Agents must never share one customer's order details or contact information with another customer.", "params": {}},
+  {"id": "POL-INVENTORY", "title": "Inventory adjustments", "text": "Single inventory adjustments larger than 50 units require warehouse manager approval. Stock can never go below zero.", "params": {"inventory_max_adjustment": 50}}
 ]

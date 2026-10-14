@@ -15,10 +15,12 @@ class Settings:
     agent: str = "rules"
     fast_model: str = "claude-haiku-5-5"
     careful_model: str = "claude-opus-5-5"
+    critical_model: str = "claude-sonnet-5-5"  # independent second opinion; "" disables it
     agent_model: str = "claude-opus-5-5"
     # Routing and decision thresholds
     risk_threshold: float = 0.5
     cascade_below_confidence: float = 0.75
+    critical_threshold: float = 0.8
     block_confidence: float = 0.7
     # Chaos testing: probability that the agent's tool call is corrupted before the guard sees it
     fault_rate: float = 0.0

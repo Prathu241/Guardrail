@@ -54,14 +54,14 @@ def test_allowed_action_executes_and_is_recorded(guard, ada, kb):
     assert row["decision"] == "allow" and row["executed"] == 1
 
 
-def test_warning_raises_risk(guard, ada):
-    v = guard.evaluate(
+def test_unverifiable_amount_escalates_and_never_executes(guard, ada, kb):
+    r = guard.execute(
         ProposedAction("issue_refund", dict(order_id="O-5001", customer_id="C-1001", amount=50.00, reason="cracked lantern")),
         ada,
     )
-    assert any(c.outcome is Outcome.WARN for c in v.checks)
-    assert v.risk.score >= 0.5
-    assert v.route[-1] == "heuristic-careful"
+    assert r.verdict.decision is Decision.ESCALATE and not r.executed
+    assert any(c.check == "amount_grounded" and c.outcome is Outcome.UNVERIFIABLE for c in r.verdict.checks)
+    assert kb.order("O-5001")["refunded"] == 0
 
 
 def test_in_memory_knowledge_bases_are_independent():

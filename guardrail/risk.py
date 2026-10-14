@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .checks import Session
 from .knowledge_base import KnowledgeBase
 from .models import (
     AgentContext,
@@ -25,6 +26,7 @@ def assess_risk(
     ctx: AgentContext,
     checks: list[CheckResult],
     kb: KnowledgeBase,
+    session: Session | None = None,
 ) -> RiskAssessment:
     """Blast radius of the action if it turns out to be wrong. Range 0..1."""
     score = spec.base_risk
@@ -49,26 +51,79 @@ def assess_risk(
         add(WARN_WEIGHT, f"warning: {w.check}")
     if action.tool in ("issue_refund", "send_email", "answer_customer") and not ctx.customer_id:
         add(0.1, "no verified customer identity in context")
+    blocked = len(session.blocked_tools) if session else 0
+    if blocked:
+        add(min(0.3, 0.1 * blocked), f"{blocked} earlier blocked action(s) in this conversation")
     return RiskAssessment(min(round(score, 3), 1.0), factors)
 
 
 @dataclass
-class RiskRouter:
-    """Send low-risk actions to a cheap reviewer and high-risk ones to a careful one.
+class ReviewOutcome:
+    reviews: list[ReviewResult]  # every review that ran, in order
+    deciding: list[ReviewResult]  # the reviews whose verdict counts
 
-    Low-risk actions start on the fast tier; if it objects or is unsure, the same
-    request is re-reviewed by the careful tier, whose verdict is final.
+    @property
+    def grounded(self) -> bool:
+        return all(r.grounded for r in self.deciding)
+
+    @property
+    def confidence(self) -> float:
+        """Grounded: the least confident approver. Not grounded: the most confident objector."""
+        if self.grounded:
+            return min(r.confidence for r in self.deciding)
+        return max(r.confidence for r in self.deciding if not r.grounded)
+
+    @property
+    def decided_by(self) -> str:
+        objectors = [r.reviewer for r in self.deciding if not r.grounded]
+        return "+".join(objectors or [r.reviewer for r in self.deciding])
+
+
+@dataclass
+class RiskRouter:
+    """Route each action to review depth proportional to its risk.
+
+    risk < threshold            fast reviewer; if it objects or is unsure, the careful reviewer
+                                re-reviews and its verdict is final
+    threshold <= risk           careful reviewer
+    critical_threshold <= risk  careful reviewer AND an independent second reviewer (a different
+                                model, so their errors are less correlated); both must approve
     """
 
     fast: Reviewer
     careful: Reviewer
     threshold: float = 0.5
     cascade_below_confidence: float = 0.75
+    critical: Reviewer | None = None
+    critical_threshold: float = 0.8
 
-    def review(self, request: ReviewRequest) -> list[ReviewResult]:
-        if request.risk.score >= self.threshold:
-            return [self.careful.review(request)]
+    def route(self, request: ReviewRequest) -> ReviewOutcome:
+        score = request.risk.score
+        if self.critical is not None and score >= self.critical_threshold:
+            both = [self.careful.review(request), self.critical.review(request)]
+            return ReviewOutcome(both, both)
+        if score >= self.threshold:
+            r = self.careful.review(request)
+            return ReviewOutcome([r], [r])
         first = self.fast.review(request)
         if first.grounded and first.confidence >= self.cascade_below_confidence:
-            return [first]
-        return [first, self.careful.review(request)]
+            return ReviewOutcome([first], [first])
+        second = self.careful.review(request)
+        return ReviewOutcome([first, second], [second])
+
+    def review(self, request: ReviewRequest) -> list[ReviewResult]:
+        return self.route(request).reviews
+
+
+def router_for(settings) -> RiskRouter:
+    from .reviewers import reviewers_for
+
+    fast, careful, critical = reviewers_for(settings)
+    return RiskRouter(
+        fast,
+        careful,
+        threshold=settings.risk_threshold,
+        cascade_below_confidence=settings.cascade_below_confidence,
+        critical=critical,
+        critical_threshold=settings.critical_threshold,
+    )

@@ -14,20 +14,30 @@ against what the user actually said, before anything changes.
                                                                                 └ ALLOW → re-check + execute in one DB transaction
 ```
 
-**Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (component, sequence, state and
-data diagrams; threat model; trade-offs).
+**The guarantee:** no action the system cannot verify is ever executed automatically. Every
+action is either *proven* consistent with the records, the user's own words and what the agent
+actually looked up, or it is blocked, or it goes to a human. Doubt never turns into "allow".
+
+- **[docs/HARDENING.md](docs/HARDENING.md)**: the 14 defence layers, how strength is measured,
+  other approaches considered, and residual risks.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: component, sequence, state and data
+  diagrams; threat model; trade-offs.
 
 ## What's in the box
 
 | | |
 |---|---|
-| **Verification pipeline** | Schema validation → 22 deterministic grounding checks against the records → risk scoring → routing to a fast (Claude Haiku 5.5) or careful (Claude Opus 5.5) grounding reviewer. Fails closed. |
+| **Verification pipeline** | Strict schemas → 30 deterministic checks written as an allowlist (pass / fail / unverifiable → human) → risk scoring → fast (Claude Haiku 5.5) or careful (Claude Opus 5.5) reviewer, with two models required to agree on critical actions. Reviewers must quote evidence that is then verified. Fails closed. |
+| **Provenance** | Every ID, amount and quantity must come from what the user said or a lookup the agent actually made. Real-but-unmentioned orders, wrong-item prices and arbitrary amounts never auto-execute. |
+| **Claim verification** | Customer-facing text: verbatim citations, grounded numbers and dates, no dropped conditions, no added absolutes, no reversed meaning, no swapped reference points, no external links, no other customers' data. |
+| **Brakes** | Circuit breaker revokes autonomy after repeated blocked attempts; 24-hour per-customer refund cap; per-order approval limit. |
+| **Structural guarantees** | Every parameter of every tool must be covered by named checks (the app won't start otherwise); postconditions verify each write and roll it back if wrong. |
 | **Agent workflow** | LangGraph state machine `agent → verify → [await approval] → execute`, with checkpoints so paused runs survive restarts. |
 | **Human-in-the-loop** | Over-limit or uncertain actions pause the run; an approver approves or rejects in the dashboard, API or CLI; the run resumes. |
 | **Commit safety** | Checks re-run inside the write transaction; tool failures roll back; replays never double-execute. |
 | **Persistence** | SQLite system of record + audit log + approval queue + outbox + LangGraph checkpoints. |
 | **Interfaces** | REST API (agent mode and sidecar mode for any other agent stack), web dashboard, `guardrail` CLI. |
-| **Assurance** | 90 tests; a 52-case red-team suite with ablation; chaos testing that injects hallucinations into live agent runs. CI runs all of it. |
+| **Assurance** | 131 tests; a 78-case red-team suite with ablation; chaos testing that injects hallucinations into live agent runs; held-out adversarial probing. CI runs all of it. |
 | **Ops** | Dockerfile + compose, health check, `.env` config, metrics endpoint, GitHub Actions. |
 
 ## Quick start
@@ -109,30 +119,33 @@ Policies carry machine-readable limits (`refund_window_days: 30`,
 | `send_email` | outbound, irreversible | recipient on file (look-alike detection); no other customer's data; every number/date grounded; "we refunded $X" matches a refund that executed |
 | `answer_customer` | factual claims | cited policy exists; quote is verbatim; every number comes from a *cited* policy or the customer's records |
 | `update_inventory` | state change | SKU exists; stock stays ≥ 0; > 50 units needs approval |
-| `lookup_order`, `search_policies` | read-only | authorization (your own orders only); no model review needed |
+| `lookup_order`, `list_orders`, `search_policies` | read-only | authorization (your own orders only); no model review needed |
 
 ## Results (offline reviewers)
 
-**Demo, scenario 1.** A scripted hallucinating agent proposes 9 actions. 6 are blocked: a
-transposed order ID, a 10× amount, the tent's price for a lantern request, a misquoted
-policy, a typo-squatted email and a duplicate refund. The other 3 execute. The customer is
-refunded exactly $49.99, and $679.88 of bad refunds is stopped. The agent corrects itself
-after each block.
+**Demo, scenario 1.** A scripted hallucinating agent proposes 9 actions: a transposed order
+ID, a 10× amount, the tent's price for a lantern request, then the correct refund, a misquoted
+policy, a typo-squatted email, the corrected messages, and a duplicate refund. All 6 bad ones
+are blocked. Because three refund attempts had already been blocked, the agent has lost its
+autonomy for refunds: even its correct refund waits for a manager's approval (the circuit
+breaker). The customer is refunded exactly $49.99, and $679.88 of bad refunds is stopped.
 
-**Red-team ablation** (`guardrail redteam --ablation`, 42 attacks + 10 benign controls):
+**Red-team ablation** (`guardrail redteam --ablation`, 65 attacks in 9 categories + 13 legitimate controls):
 
 | Configuration | Attacks stopped | False positives | Review cost* |
 |---|---|---|---|
-| deterministic checks only | 36 / 42 | 0 / 10 | 0 |
-| + fast reviewer on everything | 40 / 42 | 0 / 10 | 19 |
-| **+ risk routing (default)** | **41 / 42** | **0 / 10** | **214** |
-| + careful reviewer on everything | 42 / 42 | 0 / 10 | 600 |
+| deterministic checks only | 63 / 65 | 0 / 13 | 0 |
+| + fast reviewer on everything | 65 / 65 | 0 / 13 | 16 |
+| **+ risk routing (default)** | **65 / 65** | **0 / 13** | **94** |
+| + careful reviewer on everything | 65 / 65 | 0 / 13 | 560 |
 
 \*Relative units: fast review = 1, careful = 40 (the ratio of Claude Haiku 5.5 to Claude Opus 5.5 list prices).
 
-The one miss under routing is kept as a documented `known_gap` (strict xfail): a small refund
-for the wrong line item scores as low risk, and the fast tier doesn't check item/amount
-correspondence.
+The deterministic allowlist does almost all the work at zero model cost. The two attacks it
+leaves to the reviewer are an invented refund reason and a reversed stock direction. These
+numbers come from attacks written alongside the defences. Held-out probing (attacks written
+afterwards) found 4 more holes, which were fixed and added to the suite. See
+[docs/HARDENING.md](docs/HARDENING.md).
 
 **Chaos** (`guardrail chaos --rounds 3`): every agent turn gets an injected hallucination
 (transposed IDs, decimal slips, wrong customer, inflated policy numbers, fabricated citations,
@@ -153,9 +166,9 @@ guardrail/
   api/    server.py static/index.html      REST API + dashboard
   cli.py  demo.py  redteam.py
   data/kb/*.json                    seed data
-redteam/cases.json                  52 red-team cases
+redteam/cases.json                  78 red-team cases
 tests/                              unit, workflow, API, red-team, chaos
-docs/ARCHITECTURE.md
+docs/ARCHITECTURE.md  docs/HARDENING.md
 Dockerfile  docker-compose.yml  Makefile  .github/workflows/ci.yml  .env.example
 ```
 

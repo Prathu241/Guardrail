@@ -36,7 +36,7 @@ def _req(kb):
 
 
 def test_parses_structured_output_and_sends_schema(kb):
-    client = FakeClient(_response({"grounded": False, "confidence": 0.9, "concerns": ["wrong item"]}))
+    client = FakeClient(_response({"grounded": False, "confidence": 0.9, "concerns": ["wrong item"], "evidence": []}))
     r = ClaudeReviewer("claude-opus-5-5", "high", "careful", 40, use_fallbacks=True, client=client).review(_req(kb))
     assert (r.grounded, r.confidence, r.concerns) == (False, 0.9, ["wrong item"])
     call = client.calls[0]
@@ -47,11 +47,37 @@ def test_parses_structured_output_and_sends_schema(kb):
 
 
 def test_fast_tier_uses_haiku_without_fallbacks(kb):
-    client = FakeClient(_response({"grounded": True, "confidence": 0.95, "concerns": []}))
-    fast, careful = claude_reviewers(client=client)
-    fast.review(_req(kb))
+    client = FakeClient(_response({"grounded": True, "confidence": 0.95, "concerns": [], "evidence": ["O-5001"]}))
+    fast, careful, critical = claude_reviewers(client=client)
+    assert fast.review(_req(kb)).grounded
     assert client.calls[0]["model"] == "claude-haiku-5-5" and "fallbacks" not in client.calls[0]
-    assert careful.model == "claude-opus-5-5"
+    assert careful.model == "claude-opus-5-5" and critical.model == "claude-sonnet-5-5"
+
+
+def _verdict(kb, payload):
+    reviewer = ClaudeReviewer("claude-opus-5-5", "high", "careful", 40, client=FakeClient(_response(payload)))
+    return reviewer.review(_req(kb))
+
+
+def test_approval_with_real_evidence_is_accepted(kb):
+    r = _verdict(kb, {"grounded": True, "confidence": 0.9, "concerns": [], "evidence": ["refund my lantern on O-5001"]})
+    assert r.grounded and r.confidence == 0.9
+
+
+def test_approval_citing_invented_evidence_fails_closed(kb):
+    r = _verdict(kb, {"grounded": True, "confidence": 0.99, "concerns": [],
+                      "evidence": ["the customer said the lantern was crushed by the courier"]})
+    assert not r.grounded and r.confidence == 0.0 and "does not exist" in r.concerns[0]
+
+
+def test_approval_without_evidence_fails_closed(kb):
+    r = _verdict(kb, {"grounded": True, "confidence": 0.99, "concerns": [], "evidence": []})
+    assert not r.grounded and r.confidence == 0.0
+
+
+def test_malformed_output_fails_closed(kb):
+    r = _verdict(kb, {"grounded": "yes"})
+    assert not r.grounded and r.confidence == 0.0
 
 
 def test_refusal_fails_closed(kb):

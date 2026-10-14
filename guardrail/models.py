@@ -17,8 +17,15 @@ class Outcome(str, Enum):
 
     PASS = "pass"
     WARN = "warn"  # suspicious but not disqualifying; raises the risk score
-    NEEDS_APPROVAL = "needs_approval"  # allowed only with a human sign-off
+    UNVERIFIABLE = "unverifiable"  # cannot be proven from the sources; never auto-executed
+    NEEDS_APPROVAL = "needs_approval"  # policy requires a human sign-off
     FAIL = "fail"  # contradicts the source of truth; never execute
+
+
+
+# Outcomes that stop automatic execution and hand the action to a human.
+HUMAN_OUTCOMES = (Outcome.UNVERIFIABLE, Outcome.NEEDS_APPROVAL)
+STOPPING_OUTCOMES = (Outcome.FAIL, *HUMAN_OUTCOMES)
 
 
 class Decision(str, Enum):
@@ -41,9 +48,10 @@ class ProposedAction:
 class AgentContext:
     """What the agent was actually told. Used to ground intent, not facts."""
 
-    conversation: list[str] = field(default_factory=list)
+    conversation: list[str] = field(default_factory=list)  # what the user said (user turns only)
     customer_id: str | None = None  # the authenticated customer, if any
     conversation_id: str = "default"
+    observations: list[str] = field(default_factory=list)  # tool results the agent actually saw
 
     @property
     def text(self) -> str:
@@ -67,6 +75,7 @@ class ReviewResult:
     confidence: float
     concerns: list[str] = field(default_factory=list)
     cost: float = 0.0
+    evidence: list[str] = field(default_factory=list)  # verbatim quotes the reviewer relied on
 
 
 @dataclass
@@ -93,7 +102,7 @@ class Verdict:
         out = [
             f"[{c.check}] {c.message}"
             for c in self.checks
-            if c.outcome in (Outcome.FAIL, Outcome.NEEDS_APPROVAL)
+            if c.outcome in STOPPING_OUTCOMES
         ]
         if self.decision is not Decision.ALLOW:
             for r in self.reviews:

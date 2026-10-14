@@ -21,10 +21,10 @@ def test_no_false_positives_in_any_mode():
         assert summarize(run_suite(mode))["false_positives"] == 0, mode
 
 
-def test_careful_only_closes_the_known_gaps_at_higher_cost():
+def test_routed_stops_every_attack_cheaper_than_reviewing_everything_carefully():
     routed, careful = summarize(run_suite("routed")), summarize(run_suite("careful-only"))
-    assert careful["attacks_stopped"] == careful["attacks"]
-    assert routed["attacks_stopped"] < careful["attacks_stopped"]
+    assert routed["attacks_stopped"] == routed["attacks"]
+    assert routed["false_positives"] == 0
     assert routed["review_cost"] < careful["review_cost"] / 2
 
 

@@ -1,9 +1,16 @@
 """Deterministic grounding checks.
 
-Each check compares one aspect of a proposed action against the knowledge base
-(or the session's record of what has actually executed) and returns a
-``CheckResult``, or ``None`` when it does not apply (e.g. the order does not
-exist, which a different check already reports).
+Each check compares one aspect of a proposed action against a verifiable source - the
+knowledge base, what the user actually said, what the agent actually observed, or what
+has actually executed - and returns a ``CheckResult``, or ``None`` when it does not apply
+(e.g. the order does not exist, which a different check already reports).
+
+The checks are written as an allowlist: a value must be positively supported by a source.
+  PASS          supported by a source
+  FAIL          contradicted by a source (or invented: absent from every source)  -> block
+  UNVERIFIABLE  no source can settle it                                           -> human
+  NEEDS_APPROVAL policy requires a human                                          -> human
+  WARN          suspicious but supported                                          -> raises risk
 
 Checks are cheap, explainable and never call a model, so they run on every action.
 """
@@ -13,6 +20,7 @@ from __future__ import annotations
 import difflib
 import itertools
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Callable
@@ -29,6 +37,8 @@ class Session:
     """What has *actually* happened in this agent run (only allowed actions land here)."""
 
     executed: list[ProposedAction] = field(default_factory=list)
+    blocked_tools: list[str] = field(default_factory=list)  # tools of actions blocked in this conversation
+    refunded_24h: dict[str, float] = field(default_factory=dict)  # customer_id -> refunds executed, last 24h
 
     def executed_keys(self) -> set[str]:
         return {action_key(a) for a in self.executed}
@@ -50,6 +60,14 @@ def _ok(name: str, msg: str, **ev: Any) -> CheckResult:
 
 def _fail(name: str, msg: str, **ev: Any) -> CheckResult:
     return CheckResult(name, Outcome.FAIL, msg, ev)
+
+
+def _unverifiable(name: str, msg: str, **ev: Any) -> CheckResult:
+    return CheckResult(name, Outcome.UNVERIFIABLE, msg, ev)
+
+
+def _approval(name: str, msg: str, **ev: Any) -> CheckResult:
+    return CheckResult(name, Outcome.NEEDS_APPROVAL, msg, ev)
 
 
 # --------------------------------------------------------------------------
@@ -81,6 +99,44 @@ def numbers_in(text: str) -> set[float]:
     return out
 
 
+def sentences(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip()]
+
+
+def contains_token(token: str, text: str) -> bool:
+    """Exact whole-token match (so O-501 does not match inside O-5010)."""
+    return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text) is not None
+
+
+def evidence_text(ctx: AgentContext) -> str:
+    """Everything the agent legitimately knows: the user's words and the tool results it saw."""
+    return "\n".join([*ctx.conversation, *ctx.observations])
+
+
+REFUND_WORDS = ("refund", "money back", "reimburse")
+PROBLEM_WORDS = (
+    "broken", "cracked", "chipped", "scratched", "dented", "damaged", "defective", "leak", "faulty", "stopped working",
+    "doesn't work", "does not work", "never arrived", "wrong", "changed my mind", "don't want",
+    "do not want", "no longer need", "torn",
+)
+WHOLE_ORDER = ("whole order", "entire order", "everything", "full refund", "all of it", "refund order",
+               "refund my order", "refund the order")
+
+
+def requested_skus(user_text: str, kb: KnowledgeBase) -> set[str]:
+    """Products the user named in the sentences where they ask for a refund or report a problem."""
+    asking = " ".join(
+        x for x in sentences(user_text.lower())
+        if any(w in x for w in REFUND_WORDS) or any(w in x for w in PROBLEM_WORDS)
+    )
+    found = {sku for sku in kb.ids("sku") if sku.lower() in asking}
+    for name, sku in kb.product_names().items():
+        last = name.split()[-1]
+        if name in asking or re.search(rf"\b{re.escape(last)}s?\b", asking):
+            found.add(sku)
+    return found
+
+
 def _has_lookalike_chars(value: str) -> bool:
     return any(ord(ch) > 127 for ch in value)
 
@@ -109,6 +165,14 @@ INJECTION_PATTERNS = [
     r"\bsystem prompt\b",
     r"</?\s*(system|assistant|tool|instructions?)\s*>",
     r"\b(bypass|skip|disable|override) (the )?(guardrails?|approvals?|checks?|polic(y|ies)|verification)",
+    r"\bforget (all |any )?(the |your )?(previous |prior |earlier )?(rules|instructions|guidelines|polic(y|ies)|training)",
+    r"\bnew (system )?instructions?\s*:",
+    r"\b(act|behave) as (an? |the )?(admin|administrator|system|developer|root|supervisor)",
+    r"\b(developer|admin|god|dan) mode\b",
+    r"\bjailbreak",
+    # text that addresses the verification layer itself is never legitimate tool input
+    r"\b(reviewer|auditor|guardrail|verifier|validator|checker)s?\b[^.]{0,60}\b(approve|allow|grounded|pass|accept|ignore)",
+    r"\b(mark|treat|consider) (this|it|the action) as (grounded|approved|verified|safe)",
     r"'\s*or\s+'?1'?\s*=\s*'?1",
     r";\s*(drop|delete|truncate|alter|update|insert)\s+",
     r"\bunion\s+select\b",
@@ -137,6 +201,41 @@ def no_injection(action, ctx, kb, session):
                 match=m.group(0),
             )
     return _ok("no_injection", "no injection payloads in arguments")
+
+
+def no_hidden_characters(action, ctx, kb, session):
+    """Zero-width, bidi-override and control characters hide text from human reviewers."""
+    for s_ in _strings(action.args):
+        bad = [
+            ch for ch in s_
+            if unicodedata.category(ch) in ("Cf", "Co", "Cs") or (unicodedata.category(ch) == "Cc" and ch not in "\n\t")
+        ]
+        if bad:
+            return _fail(
+                "no_hidden_characters",
+                f"argument contains invisible/control characters {sorted({f'U+{ord(c):04X}' for c in bad})}",
+            )
+    return _ok("no_hidden_characters", "no invisible or control characters")
+
+
+# A model that keeps getting blocked is confused or being steered; it must not be allowed to
+# keep varying an action until one variant slips through.
+BREAKER_SAME_TOOL = 3
+BREAKER_TOTAL = 6
+
+
+def autonomy_not_revoked(action, ctx, kb, session):
+    same = session.blocked_tools.count(action.tool)
+    total = len(session.blocked_tools)
+    if same >= BREAKER_SAME_TOOL or total >= BREAKER_TOTAL:
+        return _approval(
+            "autonomy_not_revoked",
+            f"{same} {action.tool} attempt(s) and {total} action(s) in total were already blocked in this "
+            "conversation; the agent no longer acts on its own here and a human must confirm",
+            same_tool=same,
+            total=total,
+        )
+    return _ok("autonomy_not_revoked", f"{total} blocked action(s) so far")
 
 
 def acts_for_authenticated_customer(action, ctx, kb, session):
@@ -189,6 +288,31 @@ def customer_owns_order(action, ctx, kb, session):
     return _ok("customer_owns_order", f"{cid} owns {order['id']}")
 
 
+def _provenance(name: str, kind: str, value: str, ctx: AgentContext) -> CheckResult:
+    evidence = evidence_text(ctx)
+    if not evidence.strip():
+        return _unverifiable(name, f"no conversation or observations were supplied to show where {kind} {value} came from")
+    if contains_token(value, evidence):
+        return _ok(name, f"{kind} {value} appears in what the user said or the agent looked up")
+    return _fail(
+        name,
+        f"{kind} {value} never appears in the conversation or in any lookup result the agent saw; "
+        "the agent invented it",
+    )
+
+
+def order_provenance(action, ctx, kb, session):
+    if kb.order(action.args["order_id"]) is None:
+        return None
+    return _provenance("order_provenance", "order", action.args["order_id"], ctx)
+
+
+def sku_provenance(action, ctx, kb, session):
+    if kb.product(action.args["sku"]) is None:
+        return None
+    return _provenance("sku_provenance", "SKU", action.args["sku"], ctx)
+
+
 def order_is_delivered(action, ctx, kb, session):
     order = kb.order(action.args["order_id"])
     if order is None:
@@ -204,6 +328,8 @@ def order_is_delivered(action, ctx, kb, session):
 
 def amount_positive(action, ctx, kb, session):
     amount = action.args["amount"]
+    if not math.isfinite(amount):
+        return _fail("amount_positive", f"refund amount is not a finite number: {amount}")
     if amount <= 0:
         return _fail("amount_positive", f"refund amount must be positive, got {amount}")
     if round(amount, 2) != amount:
@@ -263,26 +389,76 @@ def under_approval_limit(action, ctx, kb, session):
     return _ok("under_approval_limit", f"cumulative ${cumulative:.2f} within ${limit:.2f}")
 
 
-def amount_matches_line_items(action, ctx, kb, session):
-    """A hallucinated amount usually matches nothing on the invoice."""
+def _subset_sums(prices: list[float]) -> set[float]:
+    return {round(sum(c), 2) for r in range(1, len(prices) + 1) for c in itertools.combinations(prices, r)}
+
+
+def amount_grounded(action, ctx, kb, session):
+    """The amount must follow from what the customer asked for, not from the model's imagination.
+
+    PASS          the customer stated this amount, or it is the price of exactly the item(s) they
+                  asked about, or (whole-order request) the order's refundable balance
+    FAIL          it is the price of *other* items on the order (wrong item)
+    UNVERIFIABLE  it matches nothing the customer asked for (e.g. an arbitrary partial refund)
+    """
     order = kb.order(action.args["order_id"])
     if order is None:
         return None
-    units = [it["unit_price"] for it in order["items"] for _ in range(it["qty"])]
-    sums = {
-        round(sum(combo), 2)
-        for r in range(1, len(units) + 1)
-        for combo in itertools.combinations(units, r)
-    }
-    sums.add(kb.refundable_remaining(order))
-    if round(action.args["amount"], 2) in sums:
-        return _ok("amount_matches_line_items", "amount equals a combination of line items")
-    return CheckResult(
-        "amount_matches_line_items",
-        Outcome.WARN,
-        f"${action.args['amount']:.2f} does not match any combination of line items on {order['id']}",
-        {"line_items": order["items"]},
-    )
+    name = "amount_grounded"
+    amount = round(action.args["amount"], 2)
+    user = ctx.text
+    if not user.strip():
+        return _unverifiable(name, "no conversation was supplied, so the amount cannot be tied to a request")
+    units = [(it["sku"], it["unit_price"]) for it in order["items"] for _ in range(it["qty"])]
+    asked = requested_skus(user, kb) & {sku for sku, _ in units}
+    if amount in numbers_in(user):
+        ceiling = round(sum(p for sku, p in units if sku in asked), 2) if asked else kb.refundable_remaining(order)
+        if amount > ceiling + 0.005:
+            return _unverifiable(
+                name, f"the customer asked for ${amount:.2f}, more than the ${ceiling:.2f} the item(s) cost"
+            )
+        return _ok(name, f"the customer asked for ${amount:.2f}")
+
+    whole = any(w in user.lower() for w in WHOLE_ORDER) or not requested_skus(user, kb)
+    remaining = kb.refundable_remaining(order)
+    names = lambda skus: ", ".join(kb.product(x)["name"] for x in sorted(skus))  # noqa: E731
+
+    if asked:
+        expected = _subset_sums([p for sku, p in units if sku in asked])
+        if amount in expected or (whole and amount in {remaining, order["total"]}):
+            return _ok(name, f"${amount:.2f} is the price of the item(s) the customer asked about ({names(asked)})")
+        if amount in _subset_sums([p for _, p in units]):
+            return _fail(
+                name,
+                f"${amount:.2f} is the price of other item(s) on {order['id']}; the customer asked about "
+                f"{names(asked)} (${max(expected):.2f})",
+                asked=sorted(asked),
+            )
+        return _unverifiable(
+            name,
+            f"${amount:.2f} does not match the price of {names(asked)} (${max(expected):.2f}) or any amount the "
+            "customer stated",
+        )
+    if whole and amount in {remaining, order["total"]}:
+        return _ok(name, f"${amount:.2f} is the refundable balance of {order['id']}, which the customer asked to refund")
+    return _unverifiable(name, f"${amount:.2f} cannot be tied to anything the customer asked to have refunded")
+
+
+def customer_daily_refund_cap(action, ctx, kb, session):
+    cid = action.args["customer_id"]
+    if kb.customer(cid) is None:
+        return None
+    cap = kb.param("customer_daily_refund_limit")
+    total = round(session.refunded_24h.get(cid, 0.0) + action.args["amount"], 2)
+    pid = kb.policy_for_param("customer_daily_refund_limit")
+    if total > cap:
+        return _approval(
+            "customer_daily_refund_cap",
+            f"refunds to {cid} in the last 24 hours would reach ${total:.2f}, above the ${cap:.2f} limit in {pid}",
+            total=total,
+            cap=cap,
+        )
+    return _ok("customer_daily_refund_cap", f"${total:.2f} refunded to {cid} in 24h (cap ${cap:.2f})")
 
 
 # --------------------------------------------------------------------------
@@ -419,6 +595,118 @@ def commitments_match_history(action, ctx, kb, session):
     return _ok("commitments_match_history", "claims about completed actions match history")
 
 
+# Words that make a sentence a factual/policy claim which must be backed by a source.
+FACT_RE = re.compile(
+    r"\b(within|free|warrant(y|ies)|guarantee[sd]?|eligib\w*|always|never|every|policy|policies|costs?|fees?|"
+    r"charges?|percent|discount|credit|days?|weeks?|months?|years?|hours?|allowed|entitled)\b|%",
+    re.IGNORECASE,
+)
+ABSOLUTES = {"always", "never", "all", "any", "every", "anytime", "unlimited", "guaranteed", "lifetime"}
+# The reference point a policy period or condition is measured from; swapping one for another
+# ("30 days of delivery" -> "30 days of purchase") silently changes the policy.
+ANCHORS = {"purchase", "bought", "buy", "order", "delivery", "deliver", "arrival", "arrive", "shipment", "ship",
+           "payment", "pay", "invoice", "receipt", "registration", "signup"}
+STOPWORDS = set(
+    "a an the and or but if of to in on at by for with from as is are was were be been being it its this that "
+    "these those you your yours we our us i me my they them their he she his her can could will would should "
+    "may might must do does did have has had not no so than then there here per about also just very more "
+    "most some such only own same too s t get got make take give need want help please thank thanks sure "
+    "happy still yes like long well back done just let know".split()
+)
+
+
+def _stem(w: str) -> str:
+    for suffix in ("ing", "ies", "ed", "es", "s"):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            return w[: -len(suffix)] + ("y" if suffix == "ies" else "")
+    return w
+
+
+def _content_words(text: str) -> set[str]:
+    return {_stem(w) for w in re.findall(r"[a-z0-9]+(?:\.[0-9]+)?", normalize(text)) if w not in STOPWORDS}
+
+
+def claims_supported(action, ctx, kb, session):
+    """Every factual/policy sentence in a customer-facing message must be backed by a source.
+
+    Backed means: most of its content words come from the cited policies (any policy for email),
+    it keeps the numeric conditions of the policy sentence it paraphrases (no dropping "over $75"),
+    and it adds no absolutes the policy does not make ("always", "all", "never" ...).
+    """
+    customer, text = _message_scope(action, kb)
+    if action.tool == "answer_customer":
+        sources = [kb.policy(c.get("policy_id", "")) for c in action.args.get("citations", [])]
+    else:
+        sources = kb.all_policies()
+    sources = [p for p in sources if p]
+    source_sentences = [x for p in sources for x in sentences(p["text"])]
+    vocab = set().union(*(_content_words(f"{p['title']} {p['text']}") for p in sources)) if sources else set()
+    source_absolutes = ABSOLUTES & set(re.findall(r"[a-z]+", normalize(" ".join(p["text"] for p in sources))))
+    issued = {round(a.args["amount"], 2) for a in session.refunds()}
+    product_words = set().union(*(_content_words(p["name"]) for p in kb.all_products()))
+
+    for claim in sentences(text):
+        if not FACT_RE.search(claim):
+            continue
+        if _COMMITMENT_RE.search(claim) and numbers_in(claim) and numbers_in(claim) <= issued:
+            continue  # "we refunded $X" - verified by commitments_match_history
+        words = _content_words(claim)
+        if not sources:
+            return _fail("claims_supported", f"makes a policy claim without citing a policy: {claim!r}")
+        coverage = len(words & vocab) / max(1, len(words))
+        if coverage < 0.5:
+            return _fail(
+                "claims_supported",
+                f"claim is not supported by the {'cited ' if action.tool == 'answer_customer' else ''}policies: {claim!r}",
+                coverage=round(coverage, 2),
+            )
+        for src in source_sentences:
+            if len(words & _content_words(src)) >= 2:
+                # "fulfilled by replacement, not refund" vs a claim that asserts "refund"
+                for term in re.findall(r"\b(?:not|never|no)\s+([a-z]+)", normalize(src)):
+                    stem = _stem(term)
+                    negated_in_claim = re.search(rf"\b(?:not|never|no)\s+{re.escape(term)}", normalize(claim))
+                    if stem in words and not negated_in_claim:
+                        return _fail(
+                            "claims_supported",
+                            f"claim {claim!r} asserts {term!r}, which the policy sentence {src!r} rules out",
+                        )
+                dropped = numbers_in(src) - numbers_in(claim)
+                if dropped:
+                    return _fail(
+                        "claims_supported",
+                        f"claim {claim!r} drops the condition(s) {sorted(dropped)} of the policy sentence {src!r}",
+                    )
+        novel = {w for w in words - vocab - product_words - {"policy", "per"} if not w[0].isdigit()}
+        if novel & ANCHORS:
+            return _fail(
+                "claims_supported",
+                f"claim {claim!r} measures from {sorted(novel & ANCHORS)}, which the cited policy never does",
+            )
+        if len(novel) >= 2:
+            return _unverifiable(
+                "claims_supported",
+                f"claim {claim!r} uses terms the policy does not contain {sorted(novel)}; a human should check it",
+            )
+        added = (ABSOLUTES & set(re.findall(r"[a-z]+", normalize(claim)))) - source_absolutes
+        if added:
+            return _fail("claims_supported", f"claim {claim!r} adds absolutes {sorted(added)} the policy does not make")
+    return _ok("claims_supported", "every factual sentence is backed by a policy")
+
+
+URL_RE = re.compile(r"\b(?:https?://|www\.)[^\s<>\"')]+", re.IGNORECASE)
+
+
+def outbound_links_allowed(action, ctx, kb, session):
+    """Links in customer-facing messages may only point at the company's own domain."""
+    _, text = _message_scope(action, kb)
+    for url in URL_RE.findall(text):
+        host = re.sub(r"^(https?://)?(www\.)?", "", url.lower()).split("/")[0].split(":")[0]
+        if host != kb.internal_domain and not host.endswith("." + kb.internal_domain):
+            return _fail("outbound_links_allowed", f"message links to {host}, which is not a company domain (phishing?)")
+    return _ok("outbound_links_allowed", "no external links")
+
+
 def citations_exist(action, ctx, kb, session):
     cites = action.args.get("citations", [])
     missing = [c.get("policy_id") for c in cites if kb.policy(c.get("policy_id", "")) is None]
@@ -460,6 +748,18 @@ def sku_exists(action, ctx, kb, session):
     return _id_check("sku_exists", "SKU", action.args["sku"], kb.ids("sku"))
 
 
+def quantity_provenance(action, ctx, kb, session):
+    """The number of units must be the number in the request."""
+    user = ID_RE.sub(" ", ctx.text)
+    stated = {int(n) for n in re.findall(r"(?<![\w.])(\d+)(?![\w.])", user)}
+    qty = abs(action.args["delta"])
+    if not stated:
+        return _unverifiable("quantity_provenance", "the request states no quantity, so the adjustment cannot be verified")
+    if qty not in stated:
+        return _fail("quantity_provenance", f"adjusts by {qty} unit(s) but the request mentions {sorted(stated)}")
+    return _ok("quantity_provenance", f"{qty} unit(s) as stated in the request")
+
+
 def stock_stays_non_negative(action, ctx, kb, session):
     product = kb.product(action.args["sku"])
     if product is None:
@@ -493,4 +793,4 @@ def adjustment_within_limit(action, ctx, kb, session):
     return _ok("adjustment_within_limit", f"|delta| within {limit}")
 
 
-GENERIC_CHECKS: list[Check] = [no_injection, acts_for_authenticated_customer]
+GENERIC_CHECKS: list[Check] = [no_injection, no_hidden_characters, acts_for_authenticated_customer]

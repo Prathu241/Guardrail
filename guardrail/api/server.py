@@ -42,9 +42,10 @@ class ActionIn(BaseModel):
 
 
 class ContextIn(BaseModel):
-    conversation: list[str] = []
-    customer_id: str | None = None
+    conversation: list[str] = Field([], description="What the user said (user turns)")
+    customer_id: str | None = Field(None, description="The authenticated customer, if any")
     conversation_id: str = "sidecar"
+    observations: list[str] = Field([], description="Tool results the agent actually received")
 
 
 class GuardRequest(BaseModel):
@@ -114,7 +115,8 @@ def create_app(app: App | None = None) -> FastAPI:
     def _parse(req: GuardRequest) -> tuple[ProposedAction, AgentContext]:
         return (
             ProposedAction(req.action.tool, req.action.args, req.action.rationale),
-            AgentContext(req.context.conversation, req.context.customer_id, req.context.conversation_id),
+            AgentContext(req.context.conversation, req.context.customer_id, req.context.conversation_id,
+                         req.context.observations),
         )
 
     @api.post("/v1/actions/evaluate", tags=["sidecar"])

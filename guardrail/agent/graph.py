@@ -72,10 +72,16 @@ def tool_schemas(guard: Guardrail) -> list[StructuredTool]:
 
 
 def _context(state: AgentState) -> AgentContext:
+    """What the guard may treat as evidence: the user's words and the tool results the agent
+    actually received (successful ones only - a blocked call produced no information)."""
     return AgentContext(
         conversation=[m.text for m in state["messages"] if isinstance(m, HumanMessage)],
         customer_id=state.get("customer_id"),
         conversation_id=state["conversation_id"],
+        observations=[
+            m.content for m in state["messages"]
+            if isinstance(m, ToolMessage) and m.status != "error" and isinstance(m.content, str)
+        ],
     )
 
 

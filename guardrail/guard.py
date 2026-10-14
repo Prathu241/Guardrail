@@ -4,9 +4,11 @@ Lifecycle of one proposed action
 
     evaluate()   schema + deterministic checks + risk + model review  -> Verdict (audited)
        ALLOW     -> commit(): re-run the deterministic checks and execute the tool inside one
-                    database transaction, so nothing that changed since evaluation slips through
+                    database transaction, so nothing that changed since evaluation slips through;
+                    then verify the tool's postcondition and roll back if the effect is wrong
        ESCALATE  -> request_approval(): park it in the approval queue; a human decides later and
-                    commit(approved=True) runs it (still re-checked; only NEEDS_APPROVAL is waived)
+                    commit(approved=True) runs it (still re-checked; only the outcomes that asked
+                    for a human - UNVERIFIABLE / NEEDS_APPROVAL - are waived)
        BLOCK     -> nothing runs; the reasons go back to the agent
 """
 
@@ -21,6 +23,7 @@ from .config import Settings
 from .knowledge_base import KnowledgeBase
 from .ledger import ApprovalError, ApprovalQueue, AuditLog
 from .models import (
+    HUMAN_OUTCOMES,
     AgentContext,
     CheckResult,
     Decision,
@@ -29,10 +32,10 @@ from .models import (
     ProposedAction,
     Verdict,
 )
-from .reviewers import ReviewRequest, reviewers_for
-from .risk import RiskRouter, assess_risk
+from .reviewers import ReviewRequest
+from .risk import RiskRouter, assess_risk, router_for
 from .store import Database
-from .tools import ToolSpec, make_tools
+from .tools import PostconditionError, ToolSpec, make_tools
 
 
 class Guardrail:
@@ -46,7 +49,7 @@ class Guardrail:
         self.kb = kb
         self.db = kb.db
         self.tools = tools if tools is not None else make_tools(kb)
-        self.router = router or RiskRouter(*reviewers_for(Settings()))
+        self.router = router or router_for(Settings())
         self.block_confidence = block_confidence
         self.audit = AuditLog(self.db)
         self.approvals = ApprovalQueue(self.db)
@@ -54,19 +57,20 @@ class Guardrail:
     @classmethod
     def from_settings(cls, settings: Settings, db: Database | None = None) -> Guardrail:
         db = db or Database.seeded(settings.db_path)
-        router = RiskRouter(
-            *reviewers_for(settings),
-            threshold=settings.risk_threshold,
-            cascade_below_confidence=settings.cascade_below_confidence,
-        )
+        router = router_for(settings)
         return cls(KnowledgeBase(db, settings.today_date), router, block_confidence=settings.block_confidence)
 
     @classmethod
     def in_memory(cls, router: RiskRouter | None = None) -> Guardrail:
-        return cls(KnowledgeBase.in_memory(), router or RiskRouter(*reviewers_for(Settings())))
+        return cls(KnowledgeBase.in_memory(), router or router_for(Settings()))
 
     def session(self, conversation_id: str) -> Session:
-        return Session(self.audit.executed_actions(conversation_id))
+        """What has actually happened, read from the audit log (never from the agent's claims)."""
+        return Session(
+            executed=self.audit.executed_actions(conversation_id),
+            blocked_tools=self.audit.blocked_tools(conversation_id),
+            refunded_24h=self.audit.refunded_by_customer(hours=24),
+        )
 
     # ------------------------------------------------------------------ evaluate
     def evaluate(self, action: ProposedAction, ctx: AgentContext, injected_fault: str | None = None) -> Verdict:
@@ -89,8 +93,9 @@ class Guardrail:
         # Checks see the coerced arguments (e.g. "49.99" -> 49.99).
         return spec, ProposedAction(action.tool, parsed.model_dump(), action.rationale, action.id), None
 
-    def _checks(self, spec: ToolSpec, action: ProposedAction, ctx: AgentContext) -> list[CheckResult]:
-        session = self.session(ctx.conversation_id)
+    def _checks(self, spec: ToolSpec, action: ProposedAction, ctx: AgentContext,
+                session: Session | None = None) -> list[CheckResult]:
+        session = session or self.session(ctx.conversation_id)
         return [
             r for check in (*GENERIC_CHECKS, *spec.checks) if (r := check(action, ctx, self.kb, session)) is not None
         ]
@@ -100,23 +105,23 @@ class Guardrail:
         if invalid:
             return Verdict(action, Decision.BLOCK, [invalid], caught_by="deterministic")
 
-        results = self._checks(spec, action, ctx)
+        session = self.session(ctx.conversation_id)
+        results = self._checks(spec, action, ctx, session)
         if any(r.outcome is Outcome.FAIL for r in results):
             return Verdict(action, Decision.BLOCK, results, caught_by="deterministic")
 
-        risk = assess_risk(spec, action, ctx, results, self.kb)
-        if any(r.outcome is Outcome.NEEDS_APPROVAL for r in results):
+        risk = assess_risk(spec, action, ctx, results, self.kb, session)
+        # Anything not positively verified (or that policy reserves for humans) never auto-executes.
+        if any(r.outcome in HUMAN_OUTCOMES for r in results):
             return Verdict(action, Decision.ESCALATE, results, risk, caught_by="deterministic")
         if spec.read_only:
             return Verdict(action, Decision.ALLOW, results, risk)
 
-        request = ReviewRequest(action, ctx, results, risk, self.kb, self.session(ctx.conversation_id))
-        reviews = self.router.review(request)
-        final = reviews[-1]
-        if final.grounded:
-            return Verdict(action, Decision.ALLOW, results, risk, reviews)
-        decision = Decision.BLOCK if final.confidence >= self.block_confidence else Decision.ESCALATE
-        return Verdict(action, decision, results, risk, reviews, caught_by=final.reviewer)
+        outcome = self.router.route(ReviewRequest(action, ctx, results, risk, self.kb, session))
+        if outcome.grounded:
+            return Verdict(action, Decision.ALLOW, results, risk, outcome.reviews)
+        decision = Decision.BLOCK if outcome.confidence >= self.block_confidence else Decision.ESCALATE
+        return Verdict(action, decision, results, risk, outcome.reviews, caught_by=outcome.decided_by)
 
     # ------------------------------------------------------------------ commit
     def commit(self, verdict: Verdict, ctx: AgentContext, approved: bool = False) -> ExecutionResult:
@@ -128,17 +133,21 @@ class Guardrail:
             with self.db.transaction():
                 results = self._checks(spec, action, ctx)
                 stale = [r for r in results if r.outcome is Outcome.FAIL]
-                stale += [] if approved else [r for r in results if r.outcome is Outcome.NEEDS_APPROVAL]
+                # A human approval waives only the outcomes that asked for a human.
+                stale += [] if approved else [r for r in results if r.outcome in HUMAN_OUTCOMES]
                 if stale:
                     overruled = Verdict(action, Decision.BLOCK, results, verdict.risk, verdict.reviews,
                                         caught_by="commit-recheck")
                     self.audit.overrule(overruled)
                     return ExecutionResult(overruled, executed=False)
+                before = spec.snapshot(self.kb, action.args) if spec.snapshot else None
                 output = spec.fn(**action.args)
+                if spec.postcondition and (problem := spec.postcondition(self.kb, action.args, before, output)):
+                    raise PostconditionError(problem)  # rolls the write back
                 self.audit.mark_executed(action.id, output)
         except Exception as e:  # the transaction rolled back; nothing was written
             self.audit.mark_failed(action.id, f"{type(e).__name__}: {e}")
-            return ExecutionResult(verdict, executed=False, output={"error": str(e)})
+            return ExecutionResult(verdict, executed=False, output={"error": f"{type(e).__name__}: {e}"})
         return ExecutionResult(verdict, executed=True, output=output)
 
     def request_approval(self, verdict: Verdict, ctx: AgentContext) -> str:

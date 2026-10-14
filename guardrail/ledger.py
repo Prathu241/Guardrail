@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .models import AgentContext, ProposedAction, Verdict
@@ -67,6 +68,21 @@ class AuditLog:
         )
         return [ProposedAction(r["tool"], r["args"], r["rationale"], r["action_id"]) for r in rows]
 
+    def blocked_tools(self, conversation_id: str) -> list[str]:
+        rows = self.db.all(
+            "SELECT tool FROM audit WHERE conversation_id = ? AND decision = 'block' ORDER BY id", (conversation_id,)
+        )
+        return [r["tool"] for r in rows]
+
+    def refunded_by_customer(self, hours: int = 24) -> dict[str, float]:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+        rows = self.db.all(
+            "SELECT json_extract(args, '$.customer_id') AS cid, SUM(json_extract(args, '$.amount')) AS total "
+            "FROM audit WHERE tool = 'issue_refund' AND executed = 1 AND ts >= ? GROUP BY cid",
+            (since,),
+        )
+        return {r["cid"]: round(r["total"], 2) for r in rows}
+
     def get(self, action_id: str) -> dict | None:
         return self.db.one("SELECT * FROM audit WHERE action_id = ?", (action_id,))
 
@@ -86,7 +102,7 @@ class AuditLog:
         decisions = Counter(r["decision"] for r in rows)
         caught_by = Counter(r["caught_by"] for r in rows if r["caught_by"])
         failing_checks = Counter(
-            c["check"] for r in rows for c in r["checks"] if c["outcome"] in ("fail", "needs_approval")
+            c["check"] for r in rows for c in r["checks"] if c["outcome"] in ("fail", "needs_approval", "unverifiable")
         )
         routes = Counter(" -> ".join(r["route"]) for r in rows)
         faults = [r for r in rows if r["injected_fault"]]

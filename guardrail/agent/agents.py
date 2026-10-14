@@ -22,7 +22,7 @@ SKU_RE = re.compile(r"\b[A-Z]{3}-\d{3}\b")
 CUSTOMER_RE = re.compile(r"Authenticated customer: (C-\d+)")
 REFUND_WORDS = ("refund", "money back", "reimburse")
 WHOLE_ORDER = ("whole order", "entire order", "everything", "full refund", "all of it")
-PROBLEM_WORDS = ("broken", "cracked", "chipped", "damaged", "defective", "leak", "changed my mind",
+PROBLEM_WORDS = ("broken", "cracked", "chipped", "scratched", "dented", "damaged", "defective", "leak", "changed my mind",
                  "stopped working", "never arrived", "wrong", "faulty")
 # question keywords -> policy title
 POLICY_TOPICS = {
@@ -38,6 +38,15 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n", text) if s.strip()]
 
 
+def _item_requested(item_name: str, text: str) -> bool:
+    """Is this product named where the customer asks for a refund or describes a problem?"""
+    asking = " ".join(
+        x.lower() for x in _sentences(text)
+        if any(w in x.lower() for w in REFUND_WORDS) or any(w in x.lower() for w in PROBLEM_WORDS)
+    )
+    return re.search(rf"\b{re.escape(item_name.split()[-1].lower())}s?\b", asking) is not None
+
+
 def _call(name: str, **args: Any) -> dict:
     return {"name": name, "args": args, "id": f"call_{uuid.uuid4().hex[:12]}", "type": "tool_call"}
 
@@ -47,6 +56,7 @@ class _Result:
     name: str
     ok: bool
     content: str
+    args: dict
 
     @property
     def payload(self) -> Any:
@@ -66,8 +76,9 @@ class RuleBasedAgent:
         customer_id = m.group(1) if m else None
         last_human = max(i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage))
         text = messages[last_human].text
+        call_args = {c["id"]: c["args"] for m in messages if isinstance(m, AIMessage) for c in m.tool_calls}
         results = [
-            _Result(msg.name, msg.status != "error", msg.content)
+            _Result(msg.name, msg.status != "error", msg.content, call_args.get(msg.tool_call_id, {}))
             for msg in messages[last_human + 1:]
             if isinstance(msg, ToolMessage)
         ]
@@ -93,7 +104,19 @@ class RuleBasedAgent:
 
         if wants_refund:
             if not orders:
-                return AIMessage("Could you share your order number? It looks like O-1234.")
+                # Never guess an order number: look the customer's orders up and match the item.
+                listings = done("list_orders")
+                if not listings:
+                    return AIMessage("Let me find that order.", tool_calls=[_call("list_orders", customer_id=customer_id)])
+                matches = [
+                    o["id"] for o in (listings[-1].payload or []) if listings[-1].ok
+                    and any(_item_requested(item, text) for item in o["items"])
+                ]
+                if len(matches) != 1:
+                    if not answers:
+                        return self._reply(customer_id, "Could you share the order number? It looks like O-1234.")
+                    return AIMessage("Asked the customer for the order number.")
+                orders = matches
             lookups = done("lookup_order")
             if not lookups:
                 return AIMessage("Let me pull up that order.", tool_calls=[_call("lookup_order", order_id=orders[0], customer_id=customer_id)])
@@ -106,18 +129,27 @@ class RuleBasedAgent:
                 return self._refund(text, customer_id, lookup.payload)
             elif len(answers) < 1:
                 refund = refunds[-1]
-                if refund.ok:
-                    out = refund.payload
-                    msg = (f"Done! I've refunded ${out['amount']:.2f} on order {out['order_id']}. "
-                           "It should appear on your statement within a few business days.")
-                else:
-                    msg = ("I wasn't able to process this refund automatically, so I've passed it to our "
-                           "support team. They will follow up with you by email.")
-                return self._reply(customer_id, msg)
+                if not refund.ok:
+                    return self._reply(customer_id, "I wasn't able to process this refund automatically, so I've "
+                                                    "passed it to our support team. They will follow up with you by email.")
+                # State the processing time only by quoting the policy that defines it.
+                processing = [r for r in done("search_policies") if r.args.get("query") == "refund processing"]
+                if not processing:
+                    return AIMessage("Checking the refund processing policy.",
+                                     tool_calls=[_call("search_policies", query="refund processing")])
+                out = refund.payload
+                msg = f"Done! I've refunded ${out['amount']:.2f} on order {out['order_id']}."
+                policy = next((p for p in processing[-1].payload or [] if p["title"] == "Refund processing"), None)
+                cites = []
+                if policy:
+                    quote = _sentences(policy["text"])[0]
+                    msg += f" {quote}"
+                    cites = [{"policy_id": policy["id"], "quote": quote}]
+                return self._reply(customer_id, msg, cites)
             steps_answered = 1
 
         if has_question:
-            searches = done("search_policies")
+            searches = [r for r in done("search_policies") if r.args.get("query") == topic]
             if not searches:
                 return AIMessage("Let me check our policy.", tool_calls=[_call("search_policies", query=topic)])
             if len(answers) <= steps_answered:
@@ -131,14 +163,7 @@ class RuleBasedAgent:
 
     def _refund(self, text: str, customer_id: str, order: dict) -> AIMessage:
         lower = text.lower()
-        # Only items named where the customer asks for a refund or describes a problem.
-        refund_part = " ".join(
-            s for s in _sentences(lower) if any(w in s for w in REFUND_WORDS) or any(w in s for w in PROBLEM_WORDS)
-        )
-        asked = [
-            it for it in order["items"]
-            if re.search(rf"\b{re.escape(it['name'].split()[-1].lower())}s?\b", refund_part)
-        ]
+        asked = [it for it in order["items"] if _item_requested(it["name"], text)]
         if asked and not any(w in lower for w in WHOLE_ORDER):
             amount = round(sum(it["unit_price"] * it["qty"] for it in asked), 2)
             what = ", ".join(it["name"] for it in asked)

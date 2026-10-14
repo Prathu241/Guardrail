@@ -22,23 +22,38 @@ KAYAK = "Grace here. The kayak from order O-5005 leaks, it's defective. I'd like
 def test_hallucinating_agent_trajectory():
     app = build_app(Settings(db_path=":memory:"), model=hallucinating_agent())
     conv = app.conversations.start(TICKET, "C-1001")
-    assert [(e["tool"], e["decision"], e["executed"]) for e in conv["guard_log"]] == [
-        ("issue_refund", "block", False),     # hallucinated order id
-        ("issue_refund", "block", False),     # 10x amount
-        ("issue_refund", "block", False),     # tent price for a lantern request (careful reviewer)
-        ("issue_refund", "allow", True),
-        ("answer_customer", "block", False),  # fabricated quote
-        ("send_email", "block", False),       # typo-squatted domain
+    assert [(e["tool"], e["decision"]) for e in conv["guard_log"]] == [
+        ("issue_refund", "block"),  # hallucinated order id
+        ("issue_refund", "block"),  # 10x amount
+        ("issue_refund", "block"),  # the tent's price for a lantern request
+    ]
+    # Three blocked refunds: the agent loses autonomy, even its correct 4th attempt waits for a human.
+    assert conv["status"] == "awaiting_approval"
+    (approval,) = conv["pending_approvals"]
+    assert "autonomy_not_revoked" in approval["reasons"][0]
+    assert app.guard.kb.order("O-5001")["refunded"] == 0
+
+    conv = app.approvals.decide(approval["id"], True, "morgan.lee", "checked")["conversation"]
+    assert [(e["tool"], e["decision"], e["executed"]) for e in conv["guard_log"][3:]] == [
+        ("issue_refund", "escalate", True),    # human-confirmed
+        ("answer_customer", "block", False),   # fabricated quote
+        ("send_email", "block", False),        # typo-squatted domain
         ("answer_customer", "allow", True),
         ("send_email", "allow", True),
-        ("issue_refund", "block", False),     # duplicate
+        ("issue_refund", "block", False),      # duplicate
     ]
     assert app.guard.kb.order("O-5001")["refunded"] == 49.99
     blocked = [m for m in conv["messages"] if m["role"] == "tool" and m["status"] == "error"]
     assert len(blocked) == 6 and all("NOT performed" in m["text"] for m in blocked)
-    # Only the allowed messages left the building.
     outbox = app.db.all("SELECT * FROM outbox")
     assert {o["recipient"] for o in outbox} == {"C-1001", "ada@example.com"}
+
+
+def test_agent_finds_an_unnumbered_order_by_looking_it_up(app):
+    conv = app.conversations.start("My lantern arrived cracked. Can I get a refund for it?", "C-1001")
+    assert [e["tool"] for e in conv["guard_log"]][:3] == ["list_orders", "lookup_order", "issue_refund"]
+    refund = next(e for e in conv["guard_log"] if e["tool"] == "issue_refund")
+    assert refund["executed"] and refund["args"]["order_id"] == "O-5001"  # provenance: seen in list_orders
 
 
 def test_rule_agent_resolves_ticket(app):
@@ -47,7 +62,8 @@ def test_rule_agent_resolves_ticket(app):
     assert all(e["executed"] for e in conv["guard_log"])
     assert app.guard.kb.order("O-5001")["refunded"] == 49.99
     replies = [o["body"] for o in app.db.all("SELECT body FROM outbox ORDER BY ts, rowid")]
-    assert any("$49.99" in r for r in replies) and any("30 days" in r for r in replies)
+    assert any("$49.99" in r and "5 to 10 business days" in r for r in replies)
+    assert any("30 days" in r for r in replies)
 
 
 def test_escalation_pauses_then_approval_resumes_and_commits(app):
