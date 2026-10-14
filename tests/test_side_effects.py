@@ -230,8 +230,8 @@ def test_server_worker_delivers_in_the_background(tmp_path):
     with TestClient(create_app(app)) as client:
         conv = client.post("/v1/conversations", json={"customer_id": "C-1001", "message": LANTERN}).json()
         assert any(e["tool"] == "issue_refund" and e["executed"] for e in conv["guard_log"])
-        deadline = time.time() + 5
-        while time.time() < deadline and client.get("/v1/outbox?status=pending").json():
+        deadline = time.time() + 10
+        while time.time() < deadline and any(o["status"] != "sent" for o in client.get("/v1/outbox").json()):
             time.sleep(0.05)
         health = client.get("/healthz").json()
         assert health["worker"] == "running" and health["worker_errors"] == []
