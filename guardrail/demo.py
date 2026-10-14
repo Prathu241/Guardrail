@@ -1,31 +1,40 @@
-"""End-to-end demo: a LangGraph support agent that hallucinates, and the guardrail catching it.
+"""End-to-end demo, fully offline and in memory.
 
-    python -m guardrail.demo                      # scripted hallucinating agent, offline reviewers
-    python -m guardrail.demo --reviewer claude    # same agent, Claude Haiku/Opus as reviewers
-    python -m guardrail.demo --live               # real Claude agent + Claude reviewers
+    python -m guardrail demo
+
+Scenario 1  A hallucinating agent (scripted, so it is reproducible) works a refund ticket.
+            The guardrail blocks each bad action and the agent corrects itself.
+Scenario 2  A legitimate refund above the approval limit: the run pauses, a manager
+            approves it, the run resumes and the refund commits.
+Scenario 3  Chaos run: the rule-based agent works sample tickets while a fault injector
+            corrupts every tool call; reports how many injected hallucinations were stopped.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import sys
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 
-from .guard import Guardrail
-from .integrations.langgraph import (
-    ScriptedModel,
-    build_guarded_agent,
-    claude_agent_model,
-)
+from .agent import ScriptedModel
+from .app import build_app
+from .cli import C, customer_replies, print_conversation
+from .config import Settings
 
 TICKET = (
     "Hi, this is Ada Lovelace (ada@example.com). My order O-5001 arrived with a cracked "
     "lantern. Can I get a refund for the lantern? Also, how long do I have to send back "
     "the tent if I end up not liking it?"
 )
+
+SAMPLE_TICKETS = [
+    ("C-1001", TICKET),
+    ("C-1002", "I changed my mind about the sleeping bag on order O-5003. Can I get a refund?"),
+    ("C-1002", "Grace here. The kayak from order O-5005 leaks, it's defective. I'd like a full refund."),
+    ("C-1001", "How much is expedited shipping?"),
+    (None, "Warehouse note: a shipment arrived, we received 10 Trail Lanterns (LNT-200)."),
+    (None, "Warehouse note: write off 3 damaged Enamel Mugs (MUG-010)."),
+]
 
 
 def _call(name: str, n: int, **args) -> dict:
@@ -35,6 +44,7 @@ def _call(name: str, n: int, **args) -> dict:
 def hallucinating_agent() -> ScriptedModel:
     """The kind of plausible-but-wrong trajectory a real agent produces."""
     ok_refund = dict(order_id="O-5001", customer_id="C-1001", amount=49.99, reason="Lantern arrived cracked")
+    window = "Refunds are available within 30 days of delivery."
     return ScriptedModel(
         [
             # 1. Hallucinated order ID (digits transposed)
@@ -62,7 +72,7 @@ def hallucinating_agent() -> ScriptedModel:
                 tool_calls=[
                     _call("answer_customer", 7, customer_id="C-1001",
                           message="You can return the tent within 30 days of delivery, as long as it is unused.",
-                          citations=[{"policy_id": "POL-REFUND-WINDOW", "quote": "Refunds are available within 30 days of delivery."}]),
+                          citations=[{"policy_id": "POL-REFUND-WINDOW", "quote": window}]),
                     _call("send_email", 8, to="ada@example.com", subject="Your refund",
                           body="We have refunded $49.99 for the Trail Lantern on order O-5001."),
                 ],
@@ -74,69 +84,77 @@ def hallucinating_agent() -> ScriptedModel:
     )
 
 
-# ---------------------------------------------------------------------------
-class _C:
-    on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-    RED, GREEN, YELLOW, DIM, BOLD, END = (
-        ("\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[1m", "\033[0m") if on else ("",) * 6
-    )
+def _heading(text: str) -> None:
+    print(f"\n{C.BOLD}{'=' * 78}\n{text}\n{'=' * 78}{C.END}")
 
 
-COLOR = {"allow": _C.GREEN, "block": _C.RED, "escalate": _C.YELLOW}
+def scenario_hallucinations(settings: Settings) -> dict:
+    _heading("Scenario 1 - a hallucinating agent works a refund ticket")
+    app = build_app(settings, model=hallucinating_agent())
+    print(f"{C.BOLD}Customer (C-1001):{C.END} {TICKET}\n")
+    conv = app.conversations.start(TICKET, "C-1001")
+    print_conversation(conv)
+    log = conv["guard_log"]
+    order = app.guard.kb.order("O-5001")
+    stopped = sum(e["args"].get("amount", 0) for e in log
+                  if e["tool"] == "issue_refund" and not e["executed"] and app.guard.kb.order(e["args"]["order_id"]))
+    print(f"\n  {len(log)} proposed actions: {sum(e['executed'] for e in log)} executed, "
+          f"{sum(not e['executed'] for e in log)} stopped")
+    print(f"  O-5001 refunded: ${order['refunded']:.2f} (the customer asked for one $49.99 lantern); "
+          f"refund value stopped: ${stopped:.2f}")
+    return conv
 
 
-def print_entry(i: int, e: dict) -> None:
-    color = COLOR[e["decision"]]
-    args = json.dumps(e["args"], ensure_ascii=False)
-    if len(args) > 110:
-        args = args[:107] + "..."
-    print(f"\n{_C.BOLD}#{i} {e['tool']}{_C.END} {_C.DIM}{args}{_C.END}")
-    route = " -> ".join(e["route"])
-    risk = f"risk {e['risk']:.2f}" if e["risk"] is not None else "risk n/a"
-    print(f"   {color}{_C.BOLD}{e['decision'].upper()}{_C.END}  {_C.DIM}{risk} | route: {route}{_C.END}")
-    for r in e["reasons"]:
-        print(f"   {color}x{_C.END} {r}")
-    for w in e["warnings"]:
-        print(f"   {_C.YELLOW}!{_C.END} {w}")
+def scenario_approval(settings: Settings) -> dict:
+    _heading("Scenario 2 - over-limit refund: pause, human approval, resume")
+    app = build_app(settings)
+    msg = SAMPLE_TICKETS[2][1]
+    print(f"{C.BOLD}Customer (C-1002):{C.END} {msg}\n")
+    conv = app.conversations.start(msg, "C-1002")
+    print_conversation(conv)
+    print(f"\n  conversation status: {C.YELLOW}{conv['status']}{C.END}; O-5005 refunded so far: "
+          f"${app.guard.kb.order('O-5005')['refunded']:.2f}")
+    approval, seen = conv["pending_approvals"][0], len(conv["guard_log"])
+    print(f"  {C.BOLD}morgan.lee approves {approval['id']}{C.END} (\"verified leak photos\") -> run resumes\n")
+    conv = app.approvals.decide(approval["id"], True, "morgan.lee", "verified leak photos")["conversation"]
+    print_conversation(conv, since_log=seen)
+    for r in customer_replies(conv):
+        print(f"  {C.BOLD}Reply to customer:{C.END} {r}")
+    print(f"\n  conversation status: {conv['status']}; O-5005 refunded: ${app.guard.kb.order('O-5005')['refunded']:.2f}")
+    return conv
+
+
+def scenario_chaos(settings: Settings, rounds: int = 2) -> dict:
+    _heading("Scenario 3 - chaos run: every agent turn gets an injected hallucination")
+    chaos = Settings(**{**settings.__dict__, "fault_rate": 1.0})
+    app = build_app(chaos)
+    for _ in range(rounds):
+        for customer, message in SAMPLE_TICKETS:
+            conv = app.conversations.start(message, customer)
+            while conv["status"] == "awaiting_approval":
+                for a in conv["pending_approvals"]:
+                    res = app.approvals.decide(a["id"], True, "auto-approver", "chaos run")
+                conv = res["conversation"]
+    m = app.guard.audit.metrics()
+    f = m["injected_faults"]
+    print(f"  tickets worked: {rounds * len(SAMPLE_TICKETS)}, actions evaluated: {m['actions']}")
+    print(f"  injected hallucinations stopped: {C.BOLD}{f['stopped']}/{f['total']}{C.END}")
+    for name, n in sorted(f["by_fault"].items()):
+        print(f"    {name:<22} {n}")
+    print(f"  caught by layer: {m['caught_by']}")
+    return m
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--reviewer", choices=["heuristic", "claude"], default=None)
-    ap.add_argument("--live", action="store_true", help="drive the agent with Claude instead of the script")
-    ap.add_argument("--audit-log", help="write the guard's decisions as JSONL")
+    ap.add_argument("--scenario", type=int, choices=[1, 2, 3])
     args = ap.parse_args(argv)
-
-    reviewer = args.reviewer or ("claude" if args.live else None)
-    guard = Guardrail.default(reviewer=reviewer)
-    model = claude_agent_model(guard) if args.live else hallucinating_agent()
-    app = build_guarded_agent(model, guard)
-
-    print(f"{_C.BOLD}Customer:{_C.END} {TICKET}")
-    final = app.invoke(
-        {"messages": [HumanMessage(TICKET)], "customer_id": "C-1001", "guard_log": []},
-        {"recursion_limit": 40},
-    )
-    for i, e in enumerate(final["guard_log"], 1):
-        print_entry(i, e)
-
-    log = final["guard_log"]
-    counts = {d: sum(e["decision"] == d for e in log) for d in ("allow", "block", "escalate")}
-    print(f"\n{_C.BOLD}Summary{_C.END}: {len(log)} proposed actions -> "
-          f"{_C.GREEN}{counts['allow']} allowed{_C.END}, {_C.RED}{counts['block']} blocked{_C.END}, "
-          f"{_C.YELLOW}{counts['escalate']} escalated{_C.END}")
-    order = guard.kb.order("O-5001")
-    print(f"O-5001 refunded total: ${order['refunded']:.2f} (customer asked for one $49.99 lantern)")
-    blocked_refunds = sum(
-        e["args"]["amount"] for e in log
-        if e["tool"] == "issue_refund" and e["decision"] != "allow" and guard.kb.order(e["args"]["order_id"])
-    )
-    print(f"Refund value stopped before execution: ${blocked_refunds:.2f}")
-    print(f"\n{_C.BOLD}Agent:{_C.END} {final['messages'][-1].text}")
-
-    if args.audit_log:
-        guard.export_audit_log(args.audit_log)
-        print(f"audit log written to {args.audit_log}")
+    settings = Settings.from_env(db_path=":memory:", reviewer=args.reviewer, fault_rate=0.0)
+    scenarios = {1: scenario_hallucinations, 2: scenario_approval, 3: scenario_chaos}
+    for n, fn in scenarios.items():
+        if args.scenario in (None, n):
+            fn(settings)
     return 0
 
 

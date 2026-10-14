@@ -14,7 +14,6 @@ Two implementations share one interface:
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -57,7 +56,7 @@ class ReviewRequest:
             out["product"] = kb.product(a["sku"])
         if "to" in a and kb.customer_by_email(a["to"]):
             out["recipient"] = kb.customer_by_email(a["to"])
-        out["policies"] = {p["id"]: p["text"] for p in kb.policies.values()}
+        out["policies"] = {p["id"]: p["text"] for p in kb.all_policies()}
         return out
 
 
@@ -97,7 +96,7 @@ def _categories(text: str) -> set[str]:
 
 def _mentions(text: str, kb: KnowledgeBase) -> dict[str, set[str]]:
     t = text.lower()
-    skus = {s for s in kb.products if s.lower() in t}
+    skus = {s for s in kb.ids("sku") if s.lower() in t}
     for name, sku in kb.product_names().items():
         # match "trail lantern", "lantern", "lanterns"
         last = name.split()[-1]
@@ -330,11 +329,12 @@ class ClaudeReviewer:
         )
 
 
-def claude_reviewers(client=None) -> tuple[ClaudeReviewer, ClaudeReviewer]:
-    fast = ClaudeReviewer("claude-haiku-5-5", effort="low", tier="fast", cost=FAST_COST, client=client)
+def claude_reviewers(
+    client=None, fast_model: str = "claude-haiku-5-5", careful_model: str = "claude-opus-5-5"
+) -> tuple[ClaudeReviewer, ClaudeReviewer]:
+    fast = ClaudeReviewer(fast_model, effort="low", tier="fast", cost=FAST_COST, client=client)
     careful = ClaudeReviewer(
-        "claude-opus-5-5", effort="high", tier="careful", cost=CAREFUL_COST, use_fallbacks=True,
-        client=fast.client,
+        careful_model, effort="high", tier="careful", cost=CAREFUL_COST, use_fallbacks=True, client=fast.client
     )
     return fast, careful
 
@@ -343,7 +343,9 @@ def heuristic_reviewers() -> tuple[HeuristicReviewer, HeuristicReviewer]:
     return HeuristicReviewer("fast"), HeuristicReviewer("careful")
 
 
-def default_reviewers(kind: str | None = None):
-    """``kind``: 'claude', 'heuristic', or None to read GUARDRAIL_REVIEWER (default heuristic)."""
-    kind = kind or os.environ.get("GUARDRAIL_REVIEWER", "heuristic")
-    return claude_reviewers() if kind == "claude" else heuristic_reviewers()
+def reviewers_for(settings) -> tuple[Reviewer, Reviewer]:
+    if settings.reviewer == "claude":
+        return claude_reviewers(fast_model=settings.fast_model, careful_model=settings.careful_model)
+    if settings.reviewer == "heuristic":
+        return heuristic_reviewers()
+    raise ValueError(f"unknown reviewer {settings.reviewer!r} (expected 'heuristic' or 'claude')")

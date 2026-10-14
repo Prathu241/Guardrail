@@ -1,8 +1,8 @@
 """Red-team harness: replay adversarial (and benign) proposed actions through the guardrail.
 
-    python -m guardrail.redteam                  # default routed config, per-case table
-    python -m guardrail.redteam --ablation       # compare layer configurations
-    python -m guardrail.redteam --reviewer claude
+    python -m guardrail redteam                  # default routed config, per-case table
+    python -m guardrail redteam --ablation       # compare layer configurations
+    python -m guardrail redteam --reviewer claude
 """
 
 from __future__ import annotations
@@ -82,11 +82,8 @@ class CaseResult:
         return sum(r.cost for r in self.verdict.reviews)
 
 
-def run_case(
-    case: dict, router: RiskRouter, kb: KnowledgeBase | None = None, check_route: bool = True
-) -> CaseResult:
-    kb = (kb or KnowledgeBase.load()).clone()
-    guard = Guardrail(kb, router=router)
+def run_case(case: dict, router: RiskRouter, check_route: bool = True) -> CaseResult:
+    guard = Guardrail(KnowledgeBase.in_memory(), router)
     ctx = AgentContext(case["context"]["conversation"], case["context"].get("customer_id"))
     for step in case.get("setup", []):
         result = guard.execute(_action(step), ctx)
@@ -96,9 +93,8 @@ def run_case(
 
 
 def run_suite(mode: str = "routed", reviewer: str = "heuristic", cases: list[dict] | None = None) -> list[CaseResult]:
-    kb = KnowledgeBase.load()
     cases = cases if cases is not None else load_cases()
-    return [run_case(c, make_router(mode, reviewer), kb, check_route=mode == "routed") for c in cases]
+    return [run_case(c, make_router(mode, reviewer), check_route=mode == "routed") for c in cases]
 
 
 def summarize(results: list[CaseResult]) -> dict:

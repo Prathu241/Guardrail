@@ -9,13 +9,15 @@ A ``ToolSpec`` pairs the side-effecting function with:
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypedDict
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, ConfigDict, create_model
 
 from . import checks as c
 from .knowledge_base import KnowledgeBase
+from .store import new_id, now
 
 
 class Citation(TypedDict):
@@ -30,7 +32,7 @@ class ToolSpec:
     checks: list[c.Check]
     base_risk: float
     irreversible: bool = False
-    idempotent: bool = False
+    read_only: bool = False  # read-only tools skip model review (nothing to undo)
     schema: type[BaseModel] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -49,6 +51,15 @@ class ToolSpec:
         return inspect.getdoc(self.fn) or self.name
 
 
+def _outbox(kb: KnowledgeBase, channel: str, recipient: str, subject: str, body: str) -> str:
+    outbox_id = new_id("msg")
+    kb.db.insert(
+        "outbox",
+        {"id": outbox_id, "ts": now(), "channel": channel, "recipient": recipient, "subject": subject, "body": body},
+    )
+    return outbox_id
+
+
 def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
     """Build the tool set bound to a knowledge base (the system the tools mutate)."""
 
@@ -59,11 +70,27 @@ def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
 
     def send_email(to: str, subject: str, body: str) -> dict:
         """Send an email to a customer or staff member."""
-        return {"status": "sent", "to": to, "subject": subject}
+        outbox_id = _outbox(kb, "email", to, subject, body)
+        return {"status": "queued", "outbox_id": outbox_id, "to": to}
 
     def answer_customer(customer_id: str, message: str, citations: list[Citation]) -> dict:
-        """Reply to the customer in chat. Policy statements must cite policy_id + verbatim quote."""
-        return {"status": "replied", "customer_id": customer_id}
+        """Reply to the customer in chat. Any policy statement must cite the policy_id and quote
+        its text verbatim (use search_policies to get the exact wording)."""
+        outbox_id = _outbox(kb, "chat", customer_id, "", message)
+        return {"status": "delivered", "outbox_id": outbox_id}
+
+    def lookup_order(order_id: str, customer_id: str) -> dict:
+        """Read an order (status, delivery date, line items with names and prices, amount refunded)."""
+        order = kb.order(order_id)
+        items = [{**it, "name": kb.product(it["sku"])["name"]} for it in order["items"]]
+        return {**order, "items": items, "refundable_remaining": kb.refundable_remaining(order)}
+
+    def search_policies(query: str) -> list[dict]:
+        """Find company policies relevant to a question. Returns id, title and exact text."""
+        words = {w for w in query.lower().split() if len(w) > 3}
+        policies = kb.all_policies()
+        hits = [p for p in policies if words & set(f"{p['title']} {p['text']}".lower().replace(".", " ").split())]
+        return [{"id": p["id"], "title": p["title"], "text": p["text"]} for p in (hits or policies)]
 
     def update_inventory(sku: str, delta: int, reason: str) -> dict:
         """Adjust on-hand stock for a SKU by `delta` units (negative to remove)."""
@@ -113,7 +140,6 @@ def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
                 c.commitments_match_history,
             ],
             base_risk=0.05,
-            idempotent=True,
         ),
         ToolSpec(
             "update_inventory",
@@ -127,5 +153,13 @@ def make_tools(kb: KnowledgeBase) -> dict[str, ToolSpec]:
             ],
             base_risk=0.1,
         ),
+        ToolSpec(
+            "lookup_order",
+            lookup_order,
+            [c.order_exists, c.customer_exists, c.customer_owns_order],
+            base_risk=0.0,
+            read_only=True,
+        ),
+        ToolSpec("search_policies", search_policies, [], base_risk=0.0, read_only=True),
     ]
     return {s.name: s for s in specs}

@@ -49,8 +49,9 @@ def test_allowed_action_executes_and_is_recorded(guard, ada, kb):
     r = guard.execute(action, ada)
     assert r.executed
     assert kb.order("O-5001")["refunded"] == 49.99
-    assert guard.session.refunds()[0].args["amount"] == 49.99
-    assert guard.audit_log[-1].decision is Decision.ALLOW
+    assert guard.session(ada.conversation_id).refunds()[0].args["amount"] == 49.99
+    row = guard.audit.get(r.verdict.action.id)
+    assert row["decision"] == "allow" and row["executed"] == 1
 
 
 def test_warning_raises_risk(guard, ada):
@@ -63,8 +64,20 @@ def test_warning_raises_risk(guard, ada):
     assert v.route[-1] == "heuristic-careful"
 
 
-def test_kb_clone_is_independent():
-    kb = KnowledgeBase.load()
-    clone = kb.clone()
-    clone.record_refund("O-5001", 10)
-    assert kb.order("O-5001")["refunded"] == 0
+def test_in_memory_knowledge_bases_are_independent():
+    a, b = KnowledgeBase.in_memory(), KnowledgeBase.in_memory()
+    a.record_refund("O-5001", 10)
+    assert b.order("O-5001")["refunded"] == 0
+
+
+def test_acts_only_for_authenticated_customer(guard, ada):
+    v = guard.evaluate(
+        ProposedAction("lookup_order", dict(order_id="O-5003", customer_id="C-1002")), ada
+    )
+    assert v.decision is Decision.BLOCK
+    assert any("authenticated as C-1001" in r for r in v.reasons)
+
+
+def test_read_only_tools_skip_model_review(guard, ada):
+    v = guard.evaluate(ProposedAction("lookup_order", dict(order_id="O-5001", customer_id="C-1001")), ada)
+    assert v.decision is Decision.ALLOW and v.route == ["deterministic"]

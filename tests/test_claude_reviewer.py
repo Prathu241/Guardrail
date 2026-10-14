@@ -63,7 +63,7 @@ def test_refusal_fails_closed(kb):
 def test_api_error_fails_closed_to_escalation(kb, ada):
     err = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
     reviewer = ClaudeReviewer("claude-opus-5-5", "high", "careful", 40, client=FakeClient(error=err))
-    guard = Guardrail(kb, router=RiskRouter(reviewer, reviewer))
+    guard = Guardrail(kb, RiskRouter(reviewer, reviewer))
     v = guard.evaluate(
         ProposedAction("issue_refund", dict(order_id="O-5001", customer_id="C-1001", amount=49.99, reason="cracked")),
         ada,

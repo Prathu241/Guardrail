@@ -1,17 +1,19 @@
 import pytest
 
 from guardrail import AgentContext, Guardrail, KnowledgeBase, RiskRouter
+from guardrail.app import build_app
+from guardrail.config import Settings
 from guardrail.reviewers import heuristic_reviewers
 
 
 @pytest.fixture
 def kb():
-    return KnowledgeBase.load()
+    return KnowledgeBase.in_memory()
 
 
 @pytest.fixture
 def guard(kb):
-    return Guardrail(kb, router=RiskRouter(*heuristic_reviewers()))
+    return Guardrail(kb, RiskRouter(*heuristic_reviewers()))
 
 
 @pytest.fixture
@@ -21,3 +23,9 @@ def ada():
          "Can I get a refund for the lantern?"],
         customer_id="C-1001",
     )
+
+
+@pytest.fixture
+def app():
+    return build_app(Settings(db_path=":memory:"))
+

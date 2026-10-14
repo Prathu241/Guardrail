@@ -15,9 +15,10 @@ import itertools
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable
+from typing import Any
 
 from .knowledge_base import KnowledgeBase
 from .models import AgentContext, CheckResult, Outcome, ProposedAction
@@ -84,7 +85,7 @@ def _has_lookalike_chars(value: str) -> bool:
     return any(ord(ch) > 127 for ch in value)
 
 
-def _id_check(name: str, kind: str, value: str, table: dict) -> CheckResult:
+def _id_check(name: str, kind: str, value: str, table: set[str]) -> CheckResult:
     if value in table:
         return _ok(name, f"{kind} {value} exists")
     if _has_lookalike_chars(value):
@@ -138,6 +139,25 @@ def no_injection(action, ctx, kb, session):
     return _ok("no_injection", "no injection payloads in arguments")
 
 
+def acts_for_authenticated_customer(action, ctx, kb, session):
+    """The agent may only act for the customer this conversation is authenticated as."""
+    if ctx.customer_id is None:
+        return None
+    if "customer_id" in action.args and action.args["customer_id"] != ctx.customer_id:
+        return _fail(
+            "acts_for_authenticated_customer",
+            f"action is for {action.args['customer_id']} but the conversation is authenticated as {ctx.customer_id}",
+        )
+    if action.tool == "send_email" and not kb.is_staff(action.args["to"]):
+        recipient = kb.customer_by_email(action.args["to"])
+        if recipient and recipient["id"] != ctx.customer_id:
+            return _fail(
+                "acts_for_authenticated_customer",
+                f"email goes to {recipient['id']} but the conversation is authenticated as {ctx.customer_id}",
+            )
+    return _ok("acts_for_authenticated_customer", "acts for the authenticated customer")
+
+
 def not_duplicate(action, ctx, kb, session):
     if action_key(action) in session.executed_keys():
         return _fail("not_duplicate", "an identical action already executed in this session (agent loop?)")
@@ -148,17 +168,17 @@ def not_duplicate(action, ctx, kb, session):
 # issue_refund
 # --------------------------------------------------------------------------
 def order_exists(action, ctx, kb, session):
-    return _id_check("order_exists", "Order", action.args["order_id"], kb.orders)
+    return _id_check("order_exists", "Order", action.args["order_id"], kb.ids("order"))
 
 
 def customer_exists(action, ctx, kb, session):
-    return _id_check("customer_exists", "Customer", action.args["customer_id"], kb.customers)
+    return _id_check("customer_exists", "Customer", action.args["customer_id"], kb.ids("customer"))
 
 
 def customer_owns_order(action, ctx, kb, session):
     order = kb.order(action.args["order_id"])
     cid = action.args["customer_id"]
-    if order is None or cid not in kb.customers:
+    if order is None or kb.customer(cid) is None:
         return None
     if order["customer_id"] != cid:
         return _fail(
@@ -306,7 +326,7 @@ def no_cross_customer_disclosure(action, ctx, kb, session):
         return None
     own = {o["id"] for o in kb.orders_for(customer["id"])}
     leaked_orders = sorted(set(ORDER_ID_RE.findall(text)) - own)
-    others = [c for c in kb.customers.values() if c["id"] != customer["id"]]
+    others = [c for c in kb.all_customers() if c["id"] != customer["id"]]
     lowered = text.lower()
     leaked_people = [
         c["id"] for c in others if c["email"].lower() in lowered or c["name"].lower() in lowered
@@ -332,8 +352,8 @@ def _order_facts(order: dict, kb: KnowledgeBase) -> tuple[set[float], set[str]]:
 
 
 def _grounding_facts(action: ProposedAction, kb: KnowledgeBase, customer: dict | None, session: Session):
-    if action.tool == "send_email" and action.args["to"].strip().lower() in kb.staff:
-        orders = list(kb.orders.values())  # internal mail may discuss any record
+    if action.tool == "send_email" and kb.is_staff(action.args["to"]):
+        orders = kb.all_orders()  # internal mail may discuss any record
     elif customer is not None:
         orders = kb.orders_for(customer["id"])
     else:
@@ -348,7 +368,7 @@ def _grounding_facts(action: ProposedAction, kb: KnowledgeBase, customer: dict |
         # A policy fact only counts as grounded if the agent actually cites that policy.
         policies = [kb.policy(c.get("policy_id", "")) for c in action.args.get("citations", [])]
     else:
-        policies = list(kb.policies.values())
+        policies = kb.all_policies()
     for p in filter(None, policies):
         nums |= numbers_in(p["text"])
     return nums, dates
@@ -403,7 +423,7 @@ def citations_exist(action, ctx, kb, session):
     cites = action.args.get("citations", [])
     missing = [c.get("policy_id") for c in cites if kb.policy(c.get("policy_id", "")) is None]
     if missing:
-        hints = {m: KnowledgeBase.closest(str(m), kb.policies) for m in missing}
+        hints = {m: KnowledgeBase.closest(str(m), kb.ids("policy")) for m in missing}
         return _fail("citations_exist", f"cited policies do not exist: {missing}", closest=hints)
     return _ok("citations_exist", f"{len(cites)} citation(s) resolve to real policies")
 
@@ -437,7 +457,7 @@ def _similarity(a: str, b: str) -> float:
 # update_inventory
 # --------------------------------------------------------------------------
 def sku_exists(action, ctx, kb, session):
-    return _id_check("sku_exists", "SKU", action.args["sku"], kb.products)
+    return _id_check("sku_exists", "SKU", action.args["sku"], kb.ids("sku"))
 
 
 def stock_stays_non_negative(action, ctx, kb, session):
@@ -473,4 +493,4 @@ def adjustment_within_limit(action, ctx, kb, session):
     return _ok("adjustment_within_limit", f"|delta| within {limit}")
 
 
-GENERIC_CHECKS: list[Check] = [no_injection]
+GENERIC_CHECKS: list[Check] = [no_injection, acts_for_authenticated_customer]

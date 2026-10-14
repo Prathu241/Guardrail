@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import itertools
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-_ids = itertools.count(1)
+
+def _action_id() -> str:
+    return f"act-{uuid.uuid4().hex[:12]}"
 
 
 class Outcome(str, Enum):
@@ -32,7 +34,7 @@ class ProposedAction:
     tool: str
     args: dict[str, Any]
     rationale: str = ""
-    id: str = field(default_factory=lambda: f"act-{next(_ids)}")
+    id: str = field(default_factory=_action_id)
 
 
 @dataclass
@@ -40,7 +42,8 @@ class AgentContext:
     """What the agent was actually told. Used to ground intent, not facts."""
 
     conversation: list[str] = field(default_factory=list)
-    customer_id: str | None = None
+    customer_id: str | None = None  # the authenticated customer, if any
+    conversation_id: str = "default"
 
     @property
     def text(self) -> str:
@@ -79,7 +82,7 @@ class Verdict:
     checks: list[CheckResult] = field(default_factory=list)
     risk: RiskAssessment | None = None
     reviews: list[ReviewResult] = field(default_factory=list)
-    caught_by: str | None = None  # "deterministic" | reviewer name | None when allowed
+    caught_by: str | None = None  # "deterministic" | "commit-recheck" | reviewer name | None if allowed
 
     @property
     def route(self) -> list[str]:
@@ -102,6 +105,10 @@ class Verdict:
     def warnings(self) -> list[str]:
         return [f"[{c.check}] {c.message}" for c in self.checks if c.outcome is Outcome.WARN]
 
+    @property
+    def review_cost(self) -> float:
+        return sum(r.cost for r in self.reviews)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "action_id": self.action.id,
@@ -121,3 +128,4 @@ class ExecutionResult:
     verdict: Verdict
     executed: bool
     output: Any = None
+    approval_id: str | None = None

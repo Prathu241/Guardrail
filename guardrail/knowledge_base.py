@@ -6,14 +6,12 @@ so a hallucinated ID, price, or policy quote has something concrete to collide w
 
 from __future__ import annotations
 
-import copy
 import difflib
-import json
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
-from typing import Any
 
-DEFAULT_KB_DIR = Path(__file__).parent / "data" / "kb"
+from .store import SEED_DIR, Database
 
 
 def edit_distance(a: str, b: str) -> int:
@@ -33,64 +31,93 @@ def edit_distance(a: str, b: str) -> int:
 
 
 class KnowledgeBase:
-    def __init__(self, data: dict[str, Any]):
-        self._data = data
-        meta = data["meta"]
-        self.as_of: date = date.fromisoformat(meta["as_of"])
-        self.internal_domain: str = meta["internal_domain"]
-        self.customers = {c["id"]: c for c in data["customers"]}
-        self.orders = {o["id"]: o for o in data["orders"]}
-        self.products = {p["sku"]: p for p in data["products"]}
-        self.policies = {p["id"]: p for p in data["policies"]}
-        self.staff = {s["email"].lower(): s for s in data["staff"]}
+    """Read/write view of the system-of-record tables in a ``Database``."""
+
+    def __init__(self, db: Database, today: date | None = None):
+        self.db = db
+        self._today = today
 
     @classmethod
-    def load(cls, kb_dir: str | Path = DEFAULT_KB_DIR) -> "KnowledgeBase":
-        kb_dir = Path(kb_dir)
-        data = {
-            name: json.loads((kb_dir / f"{name}.json").read_text())
-            for name in ("meta", "customers", "orders", "products", "policies", "staff")
-        }
-        return cls(data)
+    def in_memory(cls, seed_dir: str | Path = SEED_DIR, today: date | None = None) -> KnowledgeBase:
+        return cls(Database.seeded(":memory:", seed_dir), today)
 
-    def clone(self) -> "KnowledgeBase":
-        return KnowledgeBase(copy.deepcopy(self._data))
+    # ---- meta -------------------------------------------------------------
+    def _meta(self, key: str) -> str:
+        return self.db.one("SELECT value FROM meta WHERE key = ?", (key,))["value"]
 
-    # ---- lookups -------------------------------------------------------
+    @property
+    def as_of(self) -> date:
+        """'Today' for policy windows. Pinned by the seed data so results are reproducible."""
+        return self._today or date.fromisoformat(self._meta("as_of"))
+
+    @property
+    def internal_domain(self) -> str:
+        return self._meta("internal_domain")
+
+    # ---- lookups -------------------------------------------------------------
     def order(self, order_id: str) -> dict | None:
-        return self.orders.get(order_id)
+        return self.db.one("SELECT * FROM orders WHERE id = ?", (order_id,))
 
     def customer(self, customer_id: str) -> dict | None:
-        return self.customers.get(customer_id)
+        return self.db.one("SELECT * FROM customers WHERE id = ?", (customer_id,))
 
     def product(self, sku: str) -> dict | None:
-        return self.products.get(sku)
+        return self.db.one("SELECT * FROM products WHERE sku = ?", (sku,))
 
     def policy(self, policy_id: str) -> dict | None:
-        return self.policies.get(policy_id)
+        return self.db.one("SELECT * FROM policies WHERE id = ?", (policy_id,))
 
     def customer_by_email(self, email: str) -> dict | None:
-        email = email.strip().lower()
-        return next((c for c in self.customers.values() if c["email"].lower() == email), None)
+        return self.db.one("SELECT * FROM customers WHERE lower(email) = ?", (email.strip().lower(),))
 
     def orders_for(self, customer_id: str) -> list[dict]:
-        return [o for o in self.orders.values() if o["customer_id"] == customer_id]
+        return self.db.all("SELECT * FROM orders WHERE customer_id = ? ORDER BY id", (customer_id,))
+
+    def all_orders(self) -> list[dict]:
+        return self.db.all("SELECT * FROM orders ORDER BY id")
+
+    def all_customers(self) -> list[dict]:
+        return self.db.all("SELECT * FROM customers ORDER BY id")
+
+    def all_products(self) -> list[dict]:
+        return self.db.all("SELECT * FROM products ORDER BY sku")
+
+    def all_policies(self) -> list[dict]:
+        return self.db.all("SELECT * FROM policies ORDER BY id")
+
+    def all_staff(self) -> list[dict]:
+        return self.db.all("SELECT * FROM staff ORDER BY email")
+
+    def ids(self, kind: str) -> set[str]:
+        table, col = {"order": ("orders", "id"), "customer": ("customers", "id"),
+                      "sku": ("products", "sku"), "policy": ("policies", "id")}[kind]
+        return {r[col] for r in self.db.all(f"SELECT {col} FROM {table}")}
+
+    def is_staff(self, email: str) -> bool:
+        return self.db.one("SELECT 1 AS x FROM staff WHERE email = ?", (email.strip().lower(),)) is not None
 
     def known_emails(self) -> set[str]:
-        return {c["email"].lower() for c in self.customers.values()} | set(self.staff)
+        return {c["email"].lower() for c in self.all_customers()} | {s["email"] for s in self.all_staff()}
 
-    def param(self, name: str) -> Any:
+    def param(self, name: str):
         """Look up a machine-readable policy parameter (e.g. refund_window_days)."""
-        for p in self.policies.values():
-            if name in p.get("params", {}):
+        for p in self.all_policies():
+            if name in p["params"]:
                 return p["params"][name]
         raise KeyError(name)
 
     def policy_for_param(self, name: str) -> str:
-        return next(pid for pid, p in self.policies.items() if name in p.get("params", {}))
+        return next(p["id"] for p in self.all_policies() if name in p["params"])
+
+    def product_names(self) -> dict[str, str]:
+        return {p["name"].lower(): p["sku"] for p in self.all_products()}
 
     @staticmethod
-    def closest(value: str, candidates, n: int = 1) -> list[str]:
+    def refundable_remaining(order: dict) -> float:
+        return round(order["total"] - order["refunded"], 2)
+
+    @staticmethod
+    def closest(value: str, candidates: Iterable[str], n: int = 1) -> list[str]:
         """Nearest candidates by edit distance (transpositions count as one edit)."""
         limit = max(2, len(value) // 4)
         scored = sorted(
@@ -99,16 +126,11 @@ class KnowledgeBase:
         )
         return [c for d, _, c in scored[:n] if d <= limit]
 
-    def refundable_remaining(self, order: dict) -> float:
-        return round(order["total"] - order["refunded"], 2)
-
-    def product_names(self) -> dict[str, str]:
-        return {p["name"].lower(): sku for sku, p in self.products.items()}
-
-    # ---- mutations (performed only by tools, only after the guard allows) ----
-    def record_refund(self, order_id: str, amount: float) -> None:
-        self.orders[order_id]["refunded"] = round(self.orders[order_id]["refunded"] + amount, 2)
+    # ---- mutations (performed only by tools, only inside a guarded commit) ----
+    def record_refund(self, order_id: str, amount: float) -> float:
+        self.db.run("UPDATE orders SET refunded = round(refunded + ?, 2) WHERE id = ?", (amount, order_id))
+        return self.order(order_id)["refunded"]
 
     def adjust_stock(self, sku: str, delta: int) -> int:
-        self.products[sku]["stock"] += delta
-        return self.products[sku]["stock"]
+        self.db.run("UPDATE products SET stock = stock + ? WHERE sku = ?", (delta, sku))
+        return self.product(sku)["stock"]

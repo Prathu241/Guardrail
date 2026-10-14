@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardrail Console</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5f6b7a; --line: #e2e6ea;
+  --accent: #2f5bd3; --allow: #1d7a46; --allow-bg: #e3f4ea; --block: #b42318; --block-bg: #fdecea;
+  --esc: #a15c00; --esc-bg: #fff3dc; --fault: #6941c6; --fault-bg: #f0ebfb; --code: #f1f3f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #1a1e24; --ink: #e6e9ed; --muted: #9aa5b1; --line: #2c323a;
+    --accent: #7b9cff; --allow: #5fd394; --allow-bg: #15301f; --block: #ff8a80; --block-bg: #3a1714;
+    --esc: #ffc266; --esc-bg: #382a10; --fault: #b9a2ff; --fault-bg: #261d3d; --code: #222831;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; }
+header .cfg { color: var(--muted); font-size: 12px; margin-left: auto; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav button { border: 0; background: none; color: var(--muted); padding: 6px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+nav button.on { background: var(--code); color: var(--ink); font-weight: 600; }
+.badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 9px; font-size: 11px; font-weight: 700; background: var(--esc-bg); color: var(--esc); }
+main { padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+h2 { font-size: 14px; margin: 0 0 10px; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+select, textarea, input { width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; }
+textarea { min-height: 84px; resize: vertical; }
+button.primary, button.ok, button.no, button.ghost { font: inherit; border-radius: 6px; padding: 7px 12px; cursor: pointer; border: 1px solid transparent; }
+button.primary { background: var(--accent); color: #fff; }
+button.ok { background: var(--allow-bg); color: var(--allow); border-color: var(--allow); }
+button.no { background: var(--block-bg); color: var(--block); border-color: var(--block); }
+button.ghost { background: none; color: var(--accent); border-color: var(--line); font-size: 12px; padding: 4px 8px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.samples { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.samples button { text-align: left; }
+.convs { list-style: none; padding: 0; margin: 12px 0 0; max-height: 420px; overflow: auto; }
+.convs li { padding: 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.convs li:hover { background: var(--code); }
+.convs li.on { border-color: var(--accent); }
+.small { font-size: 12px; color: var(--muted); }
+.msg { margin: 10px 0; }
+.msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.bubble { padding: 8px 10px; border-radius: 8px; background: var(--code); white-space: pre-wrap; word-break: break-word; }
+.user .bubble { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.call { border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+.call.allow { border-left-color: var(--allow); } .call.block { border-left-color: var(--block); } .call.escalate { border-left-color: var(--esc); }
+.call code, pre { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 2px 5px; border-radius: 4px; word-break: break-all; }
+pre { padding: 8px; white-space: pre-wrap; margin: 6px 0 0; }
+.pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 9px; text-transform: uppercase; }
+.pill.allow { background: var(--allow-bg); color: var(--allow); } .pill.block { background: var(--block-bg); color: var(--block); }
+.pill.escalate, .pill.pending { background: var(--esc-bg); color: var(--esc); } .pill.fault { background: var(--fault-bg); color: var(--fault); }
+.pill.approved { background: var(--allow-bg); color: var(--allow); } .pill.rejected { background: var(--block-bg); color: var(--block); }
+ul.reasons { margin: 6px 0 0; padding-left: 18px; }
+.banner { background: var(--esc-bg); color: var(--esc); border-radius: 8px; padding: 10px; margin: 8px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.tablewrap { overflow-x: auto; }
+.tablewrap table { min-width: 760px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.card .v { font-size: 24px; font-weight: 700; } .card .k { color: var(--muted); font-size: 12px; }
+.bar { display: grid; grid-template-columns: minmax(120px, 260px) 1fr 40px; gap: 8px; align-items: center; margin: 4px 0; font-size: 12px; }
+.bar .track { background: var(--code); border-radius: 4px; height: 10px; } .bar .fill { background: var(--accent); height: 10px; border-radius: 4px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.hidden { display: none; }
+.empty { color: var(--muted); padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Guardrail Console</h1>
+  <nav id="tabs">
+    <button data-tab="console" class="on">Console</button>
+    <button data-tab="approvals">Approvals <span id="apr-count" class="badge">0</span></button>
+    <button data-tab="audit">Audit log</button>
+    <button data-tab="metrics">Metrics</button>
+    <button data-tab="records">Records</button>
+  </nav>
+  <span class="cfg" id="cfg"></span>
+</header>
+
+<main>
+  <!-- Console -->
+  <section id="tab-console">
+    <div class="grid">
+      <div class="panel">
+        <h2>New conversation</h2>
+        <label for="who">Speaking as</label>
+        <select id="who"></select>
+        <label for="text">Message</label>
+        <textarea id="text" placeholder="e.g. My order O-5001 arrived with a cracked lantern. Can I get a refund for the lantern?"></textarea>
+        <div class="row" style="margin-top:8px"><button class="primary" id="send">Send</button><span id="sending" class="small"></span></div>
+        <div class="samples small" id="samples"></div>
+        <h2 style="margin-top:16px">Conversations</h2>
+        <ul class="convs" id="convs"></ul>
+      </div>
+      <div class="panel">
+        <div id="transcript"><div class="empty">Start or select a conversation.</div></div>
+        <div id="reply" class="row hidden" style="margin-top:10px">
+          <input id="reply-text" placeholder="Reply as the customer…" style="flex:1">
+          <button class="primary" id="reply-send">Send</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Approvals -->
+  <section id="tab-approvals" class="hidden">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <h2>Approval queue</h2>
+        <div class="row"><label for="reviewer" style="margin:0">Reviewer</label><input id="reviewer" style="width:200px" value="morgan.lee"></div>
+      </div>
+      <div id="approvals"></div>
+      <h2 style="margin-top:18px">Decided</h2>
+      <div id="decided" class="tablewrap"></div>
+    </div>
+  </section>
+
+  <!-- Audit -->
+  <section id="tab-audit" class="hidden">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <h2>Audit log</h2>
+        <select id="audit-filter" style="width:180px">
+          <option value="">All decisions</option><option value="allow">Allowed</option>
+          <option value="block">Blocked</option><option value="escalate">Escalated</option>
+        </select>
+      </div>
+      <div id="audit" class="tablewrap"></div>
+    </div>
+  </section>
+
+  <!-- Metrics -->
+  <section id="tab-metrics" class="hidden">
+    <div class="cards" id="cards"></div>
+    <div class="cols">
+      <div class="panel"><h2>Why actions were stopped (failing checks)</h2><div id="m-checks"></div></div>
+      <div class="panel"><h2>Caught by layer</h2><div id="m-layers"></div></div>
+      <div class="panel"><h2>Review routes</h2><div id="m-routes"></div></div>
+      <div class="panel"><h2>Injected faults (chaos testing)</h2><div id="m-faults"></div></div>
+    </div>
+  </section>
+
+  <!-- Records -->
+  <section id="tab-records" class="hidden">
+    <div class="cols">
+      <div class="panel"><h2>Orders</h2><div id="r-orders" class="tablewrap"></div></div>
+      <div class="panel"><h2>Products</h2><div id="r-products" class="tablewrap"></div></div>
+    </div>
+    <div class="panel" style="margin-top:16px"><h2>Outbox (messages the agent actually sent)</h2><div id="r-outbox" class="tablewrap"></div></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// All untrusted text (agent output, tool args, customer messages) is inserted with textContent.
+const $ = (sel) => document.querySelector(sel);
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "on") for (const [e, f] of Object.entries(v)) n.addEventListener(e, f);
+    else n.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined) n.append(k instanceof Node ? k : String(k));
+  return n;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+const pill = (kind, text) => el("span", { class: `pill ${kind}` }, text || kind);
+const json = (o) => JSON.stringify(o);
+
+const SAMPLES = [
+  ["C-1001", "Hi, this is Ada. My order O-5001 arrived with a cracked lantern. Can I get a refund for the lantern? Also, how long do I have to send back the tent if I end up not liking it?"],
+  ["C-1002", "Grace here. The kayak from order O-5005 leaks, it's defective. I'd like a full refund."],
+  ["C-1001", "Please refund my camp stove from O-5002, it stopped working."],
+  ["C-1002", "I changed my mind about the sleeping bag on order O-5003. Can I get a refund?"],
+  ["", "Warehouse note: a shipment arrived, we received 10 Trail Lanterns (LNT-200)."],
+];
+let current = null;
+try { $("#reviewer").value = localStorage.getItem("reviewer") || "morgan.lee"; } catch (_) {}
+$("#reviewer").addEventListener("change", () => { try { localStorage.setItem("reviewer", $("#reviewer").value); } catch (_) {} });
+
+// ---------------- tabs
+for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => show(b.dataset.tab));
+function show(tab) {
+  for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === tab);
+  for (const s of document.querySelectorAll("main > section")) s.classList.toggle("hidden", s.id !== `tab-${tab}`);
+  ({ approvals: loadApprovals, audit: loadAudit, metrics: loadMetrics, records: loadRecords, console: loadConvs })[tab]();
+}
+
+// ---------------- console
+async function init() {
+  const [health, kb] = await Promise.all([api("/healthz"), api("/v1/kb")]);
+  $("#cfg").textContent = `agent: ${health.agent} · reviewer: ${health.reviewer} · fault rate: ${health.fault_rate} · records as of ${kb.as_of}`;
+  const who = $("#who");
+  for (const c of kb.customers) who.append(el("option", { value: c.id }, `${c.name} (${c.id})`));
+  who.append(el("option", { value: "" }, "Internal operations (no customer)"));
+  for (const [cid, text] of SAMPLES) {
+    $("#samples").append(el("button", { class: "ghost", on: { click: () => { who.value = cid; $("#text").value = text; } } }, text.length > 70 ? text.slice(0, 67) + "…" : text));
+  }
+  await loadConvs();
+  refreshBadge();
+  setInterval(refreshBadge, 4000);
+}
+$("#send").addEventListener("click", async () => {
+  const message = $("#text").value.trim();
+  if (!message) return;
+  $("#sending").textContent = "Agent working…";
+  try {
+    const conv = await api("/v1/conversations", { method: "POST", body: json({ message, customer_id: $("#who").value || null }) });
+    $("#text").value = "";
+    current = conv.id;
+    renderConversation(conv);
+    await loadConvs();
+  } catch (e) { alert(e.message); }
+  $("#sending").textContent = "";
+  refreshBadge();
+});
+$("#reply-send").addEventListener("click", async () => {
+  const message = $("#reply-text").value.trim();
+  if (!message || !current) return;
+  try {
+    renderConversation(await api(`/v1/conversations/${current}/messages`, { method: "POST", body: json({ message }) }));
+    $("#reply-text").value = "";
+  } catch (e) { alert(e.message); }
+});
+
+async function loadConvs() {
+  const list = $("#convs");
+  const convs = await api("/v1/conversations");
+  list.replaceChildren(...convs.map((c) => el("li", { class: c.id === current ? "on" : "", on: { click: () => openConv(c.id) } },
+    el("div", {}, c.customer_id || "internal", " ", c.status === "awaiting_approval" ? pill("pending", "awaiting approval") : ""),
+    el("div", { class: "small" }, c.id, " · ", new Date(c.updated_at).toLocaleTimeString()))));
+  if (!convs.length) list.replaceChildren(el("li", { class: "small" }, "None yet."));
+}
+async function openConv(id) { current = id; renderConversation(await api(`/v1/conversations/${id}`)); loadConvs(); }
+
+function renderConversation(conv) {
+  const log = Object.fromEntries(conv.guard_log.map((e) => [e.tool_call_id, e]));
+  const results = Object.fromEntries(conv.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m]));
+  const out = [el("div", { class: "row", style: "justify-content:space-between" },
+    el("h2", {}, `Conversation ${conv.id}`), el("span", { class: "small" }, conv.customer_id || "internal operations"))];
+  if (conv.status === "awaiting_approval") {
+    for (const a of conv.pending_approvals) out.push(approvalCard(a, true));
+  }
+  for (const m of conv.messages) {
+    if (m.role === "tool") continue;
+    if (m.role === "user") { out.push(el("div", { class: "msg user" }, el("div", { class: "who" }, "customer"), el("div", { class: "bubble" }, m.text))); continue; }
+    const block = el("div", { class: "msg" }, el("div", { class: "who" }, "agent"));
+    if (m.text) block.append(el("div", { class: "bubble" }, m.text));
+    for (const call of m.tool_calls) block.append(callCard(call, log[call.id], results[call.id], m.injected_faults[call.id]));
+    out.push(block);
+  }
+  $("#transcript").replaceChildren(...out);
+  $("#reply").classList.toggle("hidden", conv.status === "awaiting_approval");
+}
+
+function callCard(call, entry, result, fault) {
+  const decision = entry ? entry.decision : "pending";
+  const card = el("div", { class: `call ${decision}` },
+    el("div", { class: "row" }, el("strong", {}, call.name), pill(decision === "pending" ? "pending" : decision, decision === "pending" ? "awaiting approval" : decision),
+      entry && entry.executed ? pill("allow", "executed") : "",
+      fault ? pill("fault", `injected: ${fault}`) : "",
+      entry && entry.approval ? pill(entry.approval.status, `${entry.approval.status} by ${entry.approval.decided_by || "—"}`) : "",
+      entry ? el("span", { class: "small" }, `risk ${entry.risk ?? "n/a"} · ${entry.route.join(" → ")}`) : ""),
+    el("pre", {}, JSON.stringify(call.args, null, 1)));
+  if (entry && entry.reasons.length && !entry.executed) card.append(el("ul", { class: "reasons" }, entry.reasons.map((r) => el("li", {}, r))));
+  if (result) card.append(el("details", {}, el("summary", { class: "small" }, "tool result"), el("pre", {}, result.text)));
+  return card;
+}
+
+// ---------------- approvals
+function approvalCard(a, inline) {
+  const reviewer = () => $("#reviewer").value.trim() || "reviewer";
+  const decide = async (verb) => {
+    const note = prompt(`${verb === "approve" ? "Approve" : "Reject"} - optional note:`) ?? null;
+    if (note === null) return;
+    try {
+      const res = await api(`/v1/approvals/${a.id}/${verb}`, { method: "POST", body: json({ reviewer: reviewer(), note }) });
+      if (res.conversation && current === res.conversation.id) renderConversation(res.conversation);
+      loadApprovals(); loadConvs(); refreshBadge();
+    } catch (e) { alert(e.message); }
+  };
+  return el("div", { class: "banner" },
+    el("div", { class: "row" }, el("strong", {}, inline ? "Paused: waiting for human approval" : a.tool), el("span", { class: "small" }, `${a.id} · ${a.conversation_id}`)),
+    el("pre", {}, `${a.tool} ${JSON.stringify(a.args, null, 1)}`),
+    el("ul", { class: "reasons" }, a.reasons.map((r) => el("li", {}, r))),
+    el("div", { class: "row", style: "margin-top:8px" },
+      el("button", { class: "ok", on: { click: () => decide("approve") } }, "Approve"),
+      el("button", { class: "no", on: { click: () => decide("reject") } }, "Reject")));
+}
+async function loadApprovals() {
+  const [pending, all] = await Promise.all([api("/v1/approvals?status=pending"), api("/v1/approvals?status=all")]);
+  $("#approvals").replaceChildren(...(pending.length ? pending.map((a) => approvalCard(a, false)) : [el("div", { class: "empty" }, "Nothing waiting for approval.")]));
+  const decided = all.filter((a) => a.status !== "pending");
+  $("#decided").replaceChildren(decided.length ? table(["Approval", "Tool", "Args", "Status", "By", "Note"],
+    decided.map((a) => [a.id, a.tool, el("code", {}, json(a.args)), pill(a.status), a.decided_by, a.note || ""])) : el("div", { class: "small" }, "None yet."));
+}
+async function refreshBadge() {
+  try { $("#apr-count").textContent = (await api("/v1/approvals?status=pending")).length; } catch (_) {}
+}
+
+// ---------------- audit
+$("#audit-filter").addEventListener("change", loadAudit);
+async function loadAudit() {
+  const d = $("#audit-filter").value;
+  const rows = await api(`/v1/audit${d ? `?decision=${d}` : ""}`);
+  $("#audit").replaceChildren(rows.length ? table(["Time", "Conversation", "Tool", "Decision", "Caught by", "Risk", "Route", "Reasons / fault"],
+    rows.map((r) => [new Date(r.ts).toLocaleTimeString(), el("span", { class: "small" }, r.conversation_id), el("div", {}, el("strong", {}, r.tool), el("pre", {}, json(r.args))),
+      el("div", {}, pill(r.decision), r.executed ? " " : "", r.executed ? pill("allow", "executed") : ""), r.caught_by || "", r.risk ?? "", el("span", { class: "small" }, r.route.join(" → ")),
+      el("div", {}, r.injected_fault ? pill("fault", r.injected_fault) : "", el("ul", { class: "reasons" }, r.reasons.map((x) => el("li", {}, x))))])) : el("div", { class: "empty" }, "No actions yet."));
+}
+
+// ---------------- metrics
+function bars(target, obj) {
+  const entries = Object.entries(obj);
+  const max = Math.max(1, ...entries.map(([, v]) => v));
+  $(target).replaceChildren(...(entries.length ? entries.map(([k, v]) => el("div", { class: "bar" }, el("span", {}, k),
+    el("div", { class: "track" }, el("div", { class: "fill", style: `width:${(100 * v) / max}%` })), el("span", {}, v))) : [el("div", { class: "small" }, "No data yet.")]));
+}
+async function loadMetrics() {
+  const m = await api("/v1/metrics");
+  const f = m.injected_faults;
+  const card = (k, v) => el("div", { class: "panel card" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
+  $("#cards").replaceChildren(card("actions evaluated", m.actions), card("executed", m.executed), card("blocked", m.decisions.block || 0),
+    card("escalated", m.decisions.escalate || 0), card("review cost (units)", m.review_cost),
+    card("injected faults stopped", f.total ? `${f.stopped}/${f.total}` : "—"));
+  bars("#m-checks", m.failing_checks); bars("#m-layers", m.caught_by); bars("#m-routes", m.routes); bars("#m-faults", f.by_fault);
+}
+
+// ---------------- records
+async function loadRecords() {
+  const [kb, outbox] = await Promise.all([api("/v1/kb"), api("/v1/outbox")]);
+  $("#r-orders").replaceChildren(table(["Order", "Customer", "Status", "Delivered", "Total", "Refunded"],
+    kb.orders.map((o) => [o.id, o.customer_id, o.status, o.delivered_on || "—", `$${o.total.toFixed(2)}`, `$${o.refunded.toFixed(2)}`])));
+  $("#r-products").replaceChildren(table(["SKU", "Name", "Price", "Stock"], kb.products.map((p) => [p.sku, p.name, `$${p.price.toFixed(2)}`, p.stock])));
+  $("#r-outbox").replaceChildren(outbox.length ? table(["Time", "Channel", "To", "Subject", "Body"],
+    outbox.map((o) => [new Date(o.ts).toLocaleTimeString(), o.channel, o.recipient, o.subject, o.body])) : el("div", { class: "small" }, "Nothing sent yet."));
+}
+
+function table(headers, rows) {
+  return el("table", {}, el("thead", {}, el("tr", {}, headers.map((h) => el("th", {}, h)))),
+    el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c) => el("td", {}, c ?? ""))))));
+}
+
+init().catch((e) => { $("#transcript").replaceChildren(el("div", { class: "empty" }, `Could not reach the API: ${e.message}`)); });
+</script>
+</body>
+</html>
