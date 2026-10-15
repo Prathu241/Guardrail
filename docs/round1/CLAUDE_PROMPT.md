@@ -4,7 +4,7 @@ Three ready-to-paste prompts for claude.ai (or Claude Code). Prompt A is the one
 Round 1: it turns our finished abstract into the PDF. B writes a new abstract from the facts if
 you want different wording. C makes only the diagram.
 
-Before using any of them, put your real team details into `ABSTRACT.md` (every `[bracket]`).
+Team details (SaptaX, TM-200031A7855) are already in `ABSTRACT.md`.
 
 ---
 
@@ -36,7 +36,7 @@ PAGES 1–2: THE ABSTRACT
 PAGE 3: ARCHITECTURE DIAGRAM (one page, landscape-friendly, vector if possible)
 Title "Architecture", one sentence of intro, the diagram, then a 3-sentence caption.
 Draw exactly these boxes and labelled arrows, left to right:
-  1. "Agent (Claude or rules)" --"tool call"--> a frame labelled
+  1. "Agent (LLM or rule-based)" --"tool call"--> a frame labelled
      "evaluate() · every verdict is written to the audit log" containing four boxes in a row:
      "Schema (strict types)" -> "30 checks (allowlist)" -> "Risk (score 0–1)" ->
      "Review (1 or 2 models)".
@@ -79,7 +79,7 @@ Problem 9 "Catching an Agent Before It Acts on a Bad Idea". 600–900 words, exa
 sections in this order: Problem & theme chosen; Understanding of the challenge; Proposed
 approach; Minimum viable; Stretch ambitions; Novelty / differentiation; Evaluation plan;
 Feasibility and risks. Precise and concrete, no buzzwords, no invented numbers: use ONLY the
-facts below. Team: [team name], Team ID [id], members [name: skills] x3.
+facts below. Team: SaptaX, Team ID TM-200031A7855, members Pratham S (Team Leader), Varsha R, Anjalee. Keep the wording model-agnostic: name model providers at most once.
 
 FACTS
 - System: "Guardrail", a service between an agent's decision to call a tool and the tool
@@ -158,7 +158,7 @@ As a rougher fallback (Mermaid's automatic layout is less tidy than `architectur
 
 ```mermaid
 flowchart LR
-    agent[Agent<br/>Claude or rules] -- tool call --> schema
+    agent[Agent<br/>LLM or rule-based] -- tool call --> schema
     subgraph evaluate [evaluate · every verdict is written to the audit log]
         schema[Schema<br/>strict types] --> checks[30 checks<br/>allowlist] --> risk[Risk<br/>score 0–1] --> review[Review<br/>1 or 2 models]
     end

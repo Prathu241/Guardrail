@@ -22,7 +22,7 @@
           <!-- agent -->
           <rect class="box" x="20" y="88" width="112" height="60" rx="8"/>
           <text class="t" x="76" y="114" text-anchor="middle">Agent</text>
-          <text class="s" x="76" y="132" text-anchor="middle">Claude or rules</text>
+          <text class="s" x="76" y="132" text-anchor="middle">LLM or rule-based</text>
 
           <!-- evaluate frame -->
           <rect class="frame" x="165" y="52" width="455" height="128" rx="10"/>

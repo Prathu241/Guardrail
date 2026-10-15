@@ -1,42 +1,44 @@
-# Guardrail: proving every agent action before it runs
+# Guardrail: verifying an AI agent's actions before they execute
 
-**Team** [Team name] · **Team ID** [______] · **Theme 6** AI You Can Actually Trust · **Problem 9** Catching an Agent Before It Acts on a Bad Idea
+**Team** SaptaX · **Team ID** TM-200031A7855 · **Members** Pratham S (Team Leader), Varsha R, Anjalee · **Theme 6** AI You Can Actually Trust · **Problem 9** Catching an Agent Before It Acts on a Bad Idea
 
 ## Problem & theme chosen
 
-Tool-calling agents now move money, send messages and edit records, and their failures look like success: a refund on a mistyped order number, a misquoted policy, an email to a near-miss address. These effects cannot be undone, so the check must happen before execution, against sources the model cannot talk its way around.
+We chose Problem 9 under Theme 6. Agents that call tools now issue refunds, send email and update records. Their mistakes rarely look like errors: a refund on an order number with two digits swapped, a policy quoted with the wrong figure, an email to an address one letter off. None of it can be undone, so the check belongs before the tool runs.
 
 ## Understanding of the challenge
 
-The real difficulty has four parts. First, hallucinated actions are usually valid on paper: a $129.99 refund on the customer's real order passes every existence check, yet it is the tent's price when she asked about the lantern. Second, no contradiction is not proof: a blocklist of known mistakes misses the next one. Third, checking and doing must be one step: records change between check and write, and retries can execute twice. Fourth, an LLM verifier is itself an attack surface: it can be prompt-injected through the agent's arguments, or approve on evidence it invented.
+Checking that an order ID exists is easy; the hard cases look valid. A customer asks for a refund on a cracked lantern, and an agent that refunds $129.99, the price of the tent on the same order, passes every lookup. So the action must be tied to what the user asked for and what the agent actually retrieved. Second, "nothing contradicts it" is not evidence: a value should pass only when something positively supports it. Third, check and action must be one step, because records change in between and retries can execute twice. Finally, a model acting as judge shares the agent's weaknesses: injected text can steer it, and it can approve on invented reasoning.
 
 ## Proposed approach
 
-A guardrail service between the agent's decision and tool execution, in a support-desk domain (refunds, emails, policy answers, stock changes): a LangGraph agent (agent → verify → await approval → execute) on Claude Opus 5.5, and a SQLite system of record. Every proposed call passes four stages:
+Guardrail sits between an agent and its tools. Our scenario is a customer-support desk with four kinds of action: refunds, outbound email, chat replies quoting policy, and stock changes. The agent runs as a LangGraph state machine; every proposed tool call passes four stages.
 
-1. A strict schema per tool rejects invented tools, parameters and malformed values.
-2. Thirty deterministic checks, written as an allowlist, each return PASS, FAIL (block), UNVERIFIABLE or NEEDS_APPROVAL (both go to a person). They cover ownership of every ID; provenance (every ID, amount and quantity must appear in the user's words or a tool result the agent received); policy limits read from policy records; and claims in customer-facing text (verbatim quotes, grounded numbers, no external links).
-3. An additive, explained risk score.
-4. Risk-routed model review: Claude Haiku 5.5 below 0.5, Opus 5.5 above it, and above 0.8 Opus and Sonnet 5.5 must both approve. Reviewers must quote evidence that is then found verbatim; a timeout or malformed output fails closed.
+1. Schema validation rejects invented tools, unknown parameters and malformed values.
+2. Thirty deterministic checks run against the system of record. Each returns pass, fail, unverifiable or needs-approval; fail blocks, the other two go to a person. They cover ID ownership, provenance (every ID, amount and quantity must appear in the user's messages or a tool result the agent received), policy limits, and customer-facing text (exact quotes, grounded numbers, no external links).
+3. A risk score sums explained factors such as money moved and irreversibility.
+4. Risk picks the language-model reviewer: a small fast model, a larger one above a threshold, or two different models that must agree. Reviewers must quote their evidence, which we verify. Timeouts and malformed replies count as "not verified". Any model provider fits this interface.
 
-Allowed and approved actions run in one transaction that re-checks everything, writes and verifies a postcondition; payments and emails go to an outbox, delivered after commit with idempotency keys.
+Approved actions run in one database transaction that repeats the checks, writes and verifies the result. Payments and emails are sent only after commit, with idempotency keys.
 
 ## Minimum viable
 
-MVP bullet 1 (verify one class of action against a source): four classes across seven tools, each checked against the orders, customers, products and policy records before it runs. Bullet 2 (catch a hallucinated action): in our demo a transposed order ID is blocked with the reason "O-5080 does not exist; closest real order O-5008" and the agent corrects itself; a scripted agent proposing 9 actions has all 6 bad ones stopped. Both already run.
+Both items are covered and running. Four action classes across seven tools are verified against orders, customers, products and policies before execution. For a hallucinated action, our demo agent tries to refund order O-5080, which does not exist; the guardrail blocks it, replies that the closest real order is O-5008, and the agent corrects itself. A scripted agent proposing nine actions, six of them bad, has all six stopped.
 
 ## Stretch ambitions
 
-Both stretch goals are in scope: risk routing (above) and a 92-case red-teaming suite (75 attacks in nine categories, 17 legitimate controls). They follow naturally: rules cannot judge intent (an invented refund reason), and a guardrail is only as strong as the attacks it is measured on. Next: outside attacks, τ-bench retail tasks as an external benchmark, and capability handles (mutating tools accept only references from real lookups).
+Both stretch goals are implemented: risk-based routing between a fast and a careful reviewer, and a red-team suite of 92 cases (75 attacks in nine categories plus 17 legitimate requests). Next: attacks written outside the team, τ-bench retail tasks as an external test, and state-changing tools that accept only references returned by real lookups.
 
 ## Novelty / differentiation
 
-The obvious baseline is a checker plus an LLM judge. We deviate in five ways: an allowlist with an explicit "unverifiable" outcome instead of a blocklist; provenance tracking of every value to the user's words or an observed tool result; verifying the verifier through evidence quotes; verification made atomic with execution and idempotent per action; and grounding contracts, where the service refuses to start if any tool parameter lacks a named verifying check. With model review switched off, checks alone stop 73 of the 75 red-team attacks, including all 4 provenance and 11 injection cases, and send all 10 unprovable or over-limit ones to a person.
+The obvious baseline is a rule checker plus a model judge. We differ in five ways. Checks are an allowlist with an explicit "unverifiable" outcome, so uncertainty goes to a person instead of passing. Provenance tracking catches real but unrequested records, and the reviewer's own evidence is verified. Verification and execution share one transaction, so a repeated request cannot execute twice. The service refuses to start if any tool parameter has no check assigned. With model review off, the checks alone stopped 73 of 75 attacks, including all 4 provenance and 11 injection attempts.
 
 ## Evaluation plan
 
-Metrics: attacks stopped (blocked or escalated) per category, legitimate actions wrongly stopped, review cost, latency, and chaos runs injecting realistic faults into agent runs. Baselines form an ablation: checks only, fast reviewer on all, careful reviewer on all, and our routing; the claim holds if routing matches careful-on-all at a fraction of its cost. Prototype results are simulated, not live. Red team: 92 fixed proposed actions (75 attacks, 17 legitimate) replayed without an agent, offline rule-based reviewers, two identical runs: routing stops 75/75 with 0/17 false positives using a seventh of careful-on-all's weighted reviewer calls; checks alone 73/75. Held out: all 10 attacks among 14 cases we wrote after the defences. Chaos: rule-based stand-in agent, 18 conversations, 35 injected faults, all blocked, none executed. Each figure's configuration and command is in docs/EVIDENCE.md; the finals rerun everything with live Claude.
+We report attacks stopped (blocked or escalated) per category, legitimate requests wrongly stopped, reviewer cost and latency, and fault-injection runs that insert realistic mistakes into tool calls. Baselines form an ablation: checks only, fast reviewer always, careful reviewer always, and our routing. The claim to prove: routing matches the careful setup at a fraction of its cost.
+
+Current figures use rule-based stand-ins, not live models. On the 92 cases, replayed as fixed actions and run twice with identical results, routing stopped 75 of 75 attacks with 0 of 17 false stops, using about a seventh of the careful setup's weighted reviewer calls. Ten attacks written after the defences were all stopped (six passed the earlier version). With a stand-in agent, all 35 faults injected across 18 conversations were blocked. Configurations and commands are in our repository (docs/EVIDENCE.md). Live-model runs come first.
 
 ## Feasibility and risks
 
-Team: [Member 1], verification lead ([skills]); [Member 2], evaluation lead ([skills]); [Member 3], systems lead ([skills]). The MVP and stretch goals already run (229 automated tests), so the remaining weeks go to evaluation: 10–16 Nov live Claude runs; 17–23 Nov outside attacks; 24–30 Nov τ-bench port and latency budget; 1 Dec midway report; 2–14 Dec capability handles and demo rehearsal. Risks: the live model judging differently from the stand-ins (measured first; checks do not depend on it); overfitting to our own attacks (outside attacks); too many escalations (false positives are a headline metric); an API outage at the demo (fails closed; offline mode).
+Pratham S leads and owns the checks and agent integration; Varsha R owns evaluation and red-teaming; Anjalee owns the backend, dashboard and deployment. The prototype passes 229 automated tests, so remaining time goes to evaluation: 10–16 Nov live reviewers; 17–23 Nov outside attacks; 24–30 Nov τ-bench and latency; 1 Dec midway report; 2–14 Dec reference-based tools and demo rehearsal. The main risk is live models judging differently from our stand-ins, so we measure that first; the checks themselves need no model. Other risks: overfitting to our own attacks (outside attacks), too many escalations (false stops are a headline metric), and an API outage at the demo (it fails safe and runs offline).

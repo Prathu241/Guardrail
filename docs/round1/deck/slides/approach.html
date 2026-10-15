@@ -5,10 +5,10 @@
 </div>
 <table style="font-size:26px;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif">
 <tr style="background:#E8EBE4"><th style="width:24%;text-align:left">Component</th><th style="width:76%;text-align:left">Technique and tools</th></tr>
-<tr><td>Agent</td><td>LangGraph state machine: agent → verify → await approval → execute. Claude Opus 5.5 as the agent. Tools are never callable directly.</td></tr>
+<tr><td>Agent</td><td>LangGraph state machine: agent → verify → await approval → execute. Any tool-calling LLM as the agent. Tools are never callable directly.</td></tr>
 <tr style="background:#FFFFFF"><td>Allowlist checks</td><td>30 Python checks against a SQLite system of record (orders, customers, products, policies). Limits come from the policy records.</td></tr>
 <tr><td>Provenance</td><td>Every ID, amount and quantity must appear in the user's words or in a tool result the agent actually received.</td></tr>
-<tr style="background:#FFFFFF"><td>Model review</td><td>Claude Haiku 5.5 (fast), Opus 5.5 (careful), Sonnet 5.5 (second opinion). JSON output; quoted evidence checked verbatim.</td></tr>
+<tr style="background:#FFFFFF"><td>Model review</td><td>A small fast model, a larger careful model, and a second model from a different family for the riskiest calls. JSON output; quoted evidence checked verbatim.</td></tr>
 <tr><td>Commit</td><td>One BEGIN IMMEDIATE transaction: re-check, write, verify the postcondition. Idempotent per action; runs checkpointed.</td></tr>
 <tr style="background:#FFFFFF"><td>Interfaces</td><td>FastAPI with agent mode and a sidecar API for any agent stack; approval dashboard; CLI; Docker.</td></tr>
 </table>
