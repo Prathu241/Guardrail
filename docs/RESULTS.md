@@ -1,8 +1,10 @@
 # Security regression results
 
-Generated 2026-10-14T08:05:33+00:00 · guardrail 0.3.0 · commit `56607b8` · Python 3.13.16 · reviewer backend `heuristic`
+Generated 2026-10-15T02:23:58+00:00 · guardrail 0.3.0 · commit `053bebf` · Python 3.13.16 · reviewer backend `heuristic`
 
 Suite `cases.json`: 92 cases (75 attacks, 17 legitimate controls), sha256 `e1b78c14a636f308…`. Held-out cases (written after the defences): round-2: 14.
+
+**How these numbers were produced.** Agent: none; each case replays one fixed, pre-written proposed action (with any setup actions it needs). Reviewers: offline heuristic stand-ins for the Claude reviewers, not live models; deterministic-only switches model review off. "Stopped" means blocked or escalated to a person. Review cost counts reviewer calls weighted fast 1, careful 40 (list-price ratio); it is not measured spend. Every headline number elsewhere is traced in [EVIDENCE.md](EVIDENCE.md).
 
 Reproduce: `python -m guardrail redteam --ablation --out redteam/results/latest.json --check redteam/results/baseline.json`
 
