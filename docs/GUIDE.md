@@ -46,7 +46,7 @@ in a check all lead to block or escalate.
 **What ships in the box.** A complete service for a fictional outdoor-gear support desk
 (refunds, emails, chat replies, stock changes): the verification pipeline, a LangGraph support
 agent, human approvals, delivery of payments and messages after commit, reconciliation, a REST
-API, a web dashboard, a CLI, Docker images, and a test suite of 228 tests (plus 11 live-API tests that
+API, a web dashboard, a CLI, Docker images, and a test suite of 229 tests (plus 11 live-API tests that
 run when an Anthropic key is set) and a 92-case red-team suite.
 
 ## 2. Is it ready for production?

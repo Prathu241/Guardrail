@@ -75,7 +75,7 @@ stand-in. No live model has been run yet (L1).
 | T1 | Claude failure modes: the real `anthropic` and `langchain-anthropic` SDKs against a local scripted Messages API (replies are scripted, not model judgement); 38 tests | invented evidence, 16 malformed or failed replies, timeouts and bounded retries all fail closed; full agent runs through `build_app` |
 | T2 | Races and crashes: 17 tests, review stubbed to approve everything | daily cap under 8 racing threads and 6 racing processes; duplicate and racing commits execute once; revocation racing execution has one winner; real process kills mid-write, after commit and mid-run |
 | T3 | Side effects: 20 tests, simulated payment and messaging providers | lost responses never pay twice; refused refunds are compensated; reconciliation detects money moved outside the guardrail, missing and altered provider records, and broken audit links |
-| T5 | Test suite | 228 passed (plus 11 live-API tests, skipped without a key), on Python 3.11, 3.12 and 3.13, locally from a fresh clone and on GitHub Actions |
+| T5 | Test suite | 229 passed (plus 11 live-API tests, skipped without a key), on Python 3.11, 3.12 and 3.13, locally from a fresh clone and on GitHub Actions |
 
 A perfect score on attacks the builder wrote is necessary, not sufficient. Keep adding held-out
 attacks, ideally written by someone else, and run the suite with the Claude reviewers.

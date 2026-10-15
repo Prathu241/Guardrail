@@ -130,7 +130,7 @@ FACTS
     (seed 7), heuristic reviewers, 18 conversations, 35 injected faults: 35 blocked, 0
     escalated, 0 executed.
   - E4 scripted agent proposing 9 actions: all 6 bad ones stopped.
-  - T5: 228 automated tests pass (11 live-API tests skipped without a key).
+  - T5: 229 automated tests pass (11 live-API tests skipped without a key).
   - L1: live Claude agent and reviewers NOT RUN yet.
 - Plan to finals: 10–16 Nov live Claude reviewers on the full suite; 17–23 Nov attacks written
   outside the team; 24–30 Nov τ-bench retail tasks as an external benchmark + latency budget;
