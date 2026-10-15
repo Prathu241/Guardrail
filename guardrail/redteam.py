@@ -214,6 +214,13 @@ def markdown_report(rec: dict, diff: dict | None = None) -> str:
         f"Suite `{suite['file']}`: {suite['cases']} cases ({suite['attacks']} attacks, {suite['benign']} legitimate "
         f"controls), sha256 `{suite['sha256'][:16]}…`. Held-out cases (written after the defences): "
         + (", ".join(f"{k}: {v}" for k, v in suite["held_out"].items()) or "none") + ".", "",
+        "**How these numbers were produced.** Agent: none; each case replays one fixed, pre-written proposed "
+        "action (with any setup actions it needs). Reviewers: "
+        + ("offline heuristic stand-ins for the Claude reviewers, not live models" if env["reviewer"] == "heuristic"
+           else f"`{env['reviewer']}`")
+        + "; deterministic-only switches model review off. \"Stopped\" means blocked or escalated to a person. "
+        "Review cost counts reviewer calls weighted fast 1, careful 40 (list-price ratio); it is not measured spend. "
+        "Every headline number elsewhere is traced in [EVIDENCE.md](EVIDENCE.md).", "",
         "Reproduce: `python -m guardrail redteam --ablation --out redteam/results/latest.json "
         "--check redteam/results/baseline.json`", "",
         "## Configurations", "",

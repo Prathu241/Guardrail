@@ -1,4 +1,4 @@
-.PHONY: install test lint redteam security baseline demo chaos serve docker docker-smoke check live
+.PHONY: install test lint redteam security baseline evidence demo chaos serve docker docker-smoke check live
 
 install:
 	pip install -e ".[dev]"
@@ -23,6 +23,10 @@ redteam:
 # Re-record the baseline after deliberately changing the suite or the defences
 baseline:
 	python -m guardrail redteam --ablation --out redteam/results/baseline.json --report docs/RESULTS.md
+
+# Re-run every headline result and record its configuration (docs/EVIDENCE.md, docs/evidence/evidence.json)
+evidence:
+	python -m guardrail.evidence
 
 # The complete security regression suite: adversarial unit tests, races and crashes, side effects,
 # Claude failure handling, red-team (all configurations) and chaos runs

@@ -5,12 +5,12 @@
 </div>
 <table style="font-size:24px;color:#13203A;font-family:'IBM Plex Sans', Arial, sans-serif">
 <tr style="background:#E8EBE4"><th style="width:24%;text-align:left">Obvious baseline</th><th style="width:42%;text-align:left">Our approach</th><th style="width:34%;text-align:left">What it buys</th></tr>
-<tr><td>LLM judge on every action</td><td>Deterministic allowlist first; a model only where rules can't judge</td><td>73 of 75 attacks stopped at zero model cost; every block cites its source</td></tr>
-<tr style="background:#FFFFFF"><td>Blocklist of known mistakes</td><td>Three outcomes: proven, contradicted, or unprovable and sent to a person</td><td>A new kind of error can't pass as "nothing looked wrong"</td></tr>
-<tr><td>Check that the ID exists</td><td>Provenance: the ID must come from the user's words or a lookup the agent made</td><td>Catches real but unrequested orders and items</td></tr>
-<tr style="background:#FFFFFF"><td>Trust the reviewer's verdict</td><td>The reviewer must quote evidence that is found verbatim; garbage or a timeout fails closed</td><td>A manipulated or confused judge can't approve</td></tr>
-<tr><td>Check, then execute</td><td>Re-check inside the write transaction; idempotent; outbox after commit</td><td>No stale approvals, double refunds or half-sent effects</td></tr>
+<tr><td>LLM judge on every action</td><td>Deterministic allowlist first; a model only where rules can't judge</td><td>Checks alone stop 73/75 attacks (N1)</td></tr>
+<tr style="background:#FFFFFF"><td>Blocklist of known mistakes</td><td>Three outcomes: proven, contradicted, or unprovable and sent to a person</td><td>10/10 unprovable or over-limit attacks go to a person; 0/17 false stops (N2)</td></tr>
+<tr><td>Check that the ID exists</td><td>Provenance: the ID must come from the user's words or a lookup the agent made</td><td>4/4 provenance attacks stopped (N3)</td></tr>
+<tr style="background:#FFFFFF"><td>Trust the reviewer's verdict</td><td>The reviewer must quote evidence that is found verbatim; garbage or a timeout fails closed</td><td>16/16 bad reviewer replies fail closed (T1)</td></tr>
+<tr><td>Check, then execute</td><td>Re-check inside the write transaction; idempotent; outbox after commit</td><td>Races, retries, crashes: executed once (T2)</td></tr>
 </table>
-<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6B7688">Also: grounding contracts. The service refuses to start if any tool parameter has no named check that verifies it.</p>
+<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6B7688">N1–N3: 92 fixed proposed actions, no agent, model review off. T1–T2: automated tests. All simulated, none live. Register: docs/EVIDENCE.md</p>
 <aside>The starter resources suggest a checker plus an LLM. Our differences: an allowlist instead of a blocklist, provenance tracking, verifying the verifier, and making verification atomic with execution.</aside>
 </section>

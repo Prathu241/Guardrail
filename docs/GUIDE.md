@@ -57,9 +57,11 @@ means in practice.
 
 **Ready and verified:**
 
-- The verification pipeline and its guarantee: 75/75 attacks stopped and 0/17 legitimate
-  actions wrongly stopped in the recorded red-team suite, including 10 attacks written after the
-  defences; 35/35 chaos faults stopped.
+- The verification pipeline and its guarantee, measured with **simulated** reviewers and agents
+  (no live model yet; every figure's configuration is in [EVIDENCE.md](EVIDENCE.md)): 75/75
+  attacks stopped and 0/17 legitimate actions wrongly stopped on 92 fixed red-team cases replayed
+  without an agent (E1), including 10 held-out attacks written after the defences (E2); 35/35
+  injected faults blocked in chaos runs of the rule-based stand-in agent (E3).
 - Correctness under concurrency and crashes: limits hold with racing threads and processes;
   every action executes at most once; crashed runs recover without repeating anything.
 - Side effects that can't be rolled back: delivered after commit with idempotency keys,

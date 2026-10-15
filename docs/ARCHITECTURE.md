@@ -577,11 +577,11 @@ flowchart LR
 
 - **Deterministic first, models second.** Most hallucinations contradict a record. Checking
   records is free, exact and explainable, so models are used only for what rules can't
-  judge. In the ablation, the deterministic allowlist alone stops 73/75 attacks at zero model cost.
+  judge. In the ablation (92 fixed cases, no agent, model review off; EVIDENCE.md N1), the deterministic allowlist alone stops 73/75 attacks at zero model cost.
 - **Allowlist, not blocklist.** A value must be proven from a source; "nothing contradicts it"
   is not enough. Unprovable values go to a human. See [HARDENING.md](HARDENING.md).
-- **Risk-routed review.** Routing stops 75/75 attacks at about a seventh of the cost of
-  sending everything to the careful tier (98 vs 720 relative units). Critical actions need
+- **Risk-routed review.** With heuristic stand-in reviewers (EVIDENCE.md E1), routing stops 75/75 attacks at about
+  a seventh of the weighted reviewer calls of sending everything to the careful tier (98 vs 720). Critical actions need
   two different models to agree, and every approval must quote evidence that is then verified.
 - **Fail closed.** No reviewer verdict means no execution. Uncertainty becomes a human
   decision, not a guess.

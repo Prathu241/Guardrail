@@ -112,12 +112,26 @@ FACTS
   → demo: transposed order ID O-5080 blocked ("does not exist; closest real order O-5008"),
   the agent corrects itself; a scripted 9-step hallucinating agent has all 6 bad actions
   stopped. Both stretch goals (risk routing; red-team suite) are implemented.
-- Red-team suite: 92 cases = 75 attacks in 9 categories + 17 legitimate controls; 14 cases
-  were written after the defences (held out).
-- Prototype results, OFFLINE stand-in reviewers (say so): checks only 73/75 attacks stopped,
-  0/17 false positives, cost 0; fast reviewer on all 75/75, 0/17, cost 20; risk routing 75/75,
-  0/17, cost 98; careful reviewer on all 75/75, 0/17, cost 720 (cost units: one Haiku review
-  = 1, one Opus review = 40). Chaos runs: 35/35 injected faults stopped. 228 automated tests.
+- ALL RESULTS ARE SIMULATED, NONE LIVE. For every number you use, state its configuration,
+  number of cases, and that the agent and reviewers were simulated (the evidence register is
+  docs/EVIDENCE.md in the repo):
+  - E1 red team: 92 fixed, pre-written proposed actions (75 attacks in 9 categories + 17
+    legitimate controls) replayed with NO agent; reviewers = offline rule-based (heuristic)
+    stand-ins; each configuration run twice with identical results; "stopped" = blocked or
+    escalated. Checks only (model review off) 73/75 stopped, 0/17 false positives, cost 0;
+    fast reviewer on all 75/75, 0/17, cost 20; risk routing 75/75, 0/17, cost 98; careful on
+    all 75/75, 0/17, cost 720. Cost = simulated reviewer calls weighted fast 1, careful 40
+    (list-price ratio), not measured spend.
+  - N1–N4, same 92 cases with model review off: 4/4 provenance attacks and 11/11 injection
+    attacks stopped; 10/10 unprovable or over-limit attacks escalated to a person.
+  - E2 held out: 14 cases (10 attacks, 4 controls) written after the defences BY THE SAME
+    AUTHOR; 10/10 stopped now; the code before them allowed 6 of the 10.
+  - E3 chaos: the offline rule-based stand-in agent with one tool call per turn corrupted
+    (seed 7), heuristic reviewers, 18 conversations, 35 injected faults: 35 blocked, 0
+    escalated, 0 executed.
+  - E4 scripted agent proposing 9 actions: all 6 bad ones stopped.
+  - T5: 228 automated tests pass (11 live-API tests skipped without a key).
+  - L1: live Claude agent and reviewers NOT RUN yet.
 - Plan to finals: 10–16 Nov live Claude reviewers on the full suite; 17–23 Nov attacks written
   outside the team; 24–30 Nov τ-bench retail tasks as an external benchmark + latency budget;
   1 Dec midway report; 2–14 Dec capability handles (mutating tools accept only references

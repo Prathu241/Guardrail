@@ -47,7 +47,7 @@ actually looked up, or it is blocked, or it goes to a human. Doubt never turns i
 | **Side effects that can't be rolled back** | Refunds and messages are recorded in an outbox inside the transaction and delivered after commit with idempotency keys; retries, compensation for refused refunds, and reconciliation against the providers' records, with incidents for anything that doesn't match. |
 | **Persistence** | SQLite system of record + audit log + approval queue + outbox + incidents + LangGraph checkpoints, with schema migrations for existing databases. |
 | **Interfaces** | REST API (agent mode and sidecar mode for any other agent stack), web dashboard, `guardrail` CLI. |
-| **Assurance** | 228 tests, including the real Claude SDKs against a scripted API, thread and process races, real process crashes, and side-effect failures; a 92-case red-team suite (14 held-out cases) recorded for all four configurations against a committed baseline; chaos testing that injects hallucinations into live agent runs. CI runs all of it. |
+| **Assurance** | 228 tests, including the real Claude SDKs against a scripted API, thread and process races, real process crashes, and side-effect failures; a 92-case red-team suite (14 held-out cases) recorded for all four configurations against a committed baseline; chaos testing that injects hallucinations into a stand-in agent's runs. Every headline number is traced in [docs/EVIDENCE.md](docs/EVIDENCE.md) with its configuration and whether it was simulated or live (so far: all simulated). CI runs all of it. |
 | **Access control** | API keys with roles (agent, approver, operator, admin); the approver recorded is whoever holds the key. Production mode refuses to start without keys, without the Claude reviewer, or on an in-memory database. |
 | **Ops** | Dockerfile + compose, production compose with automatic HTTPS (Caddy), `guardrail backup`, health check, end-to-end container smoke test, background worker, `.env` config, metrics and incidents endpoints, GitHub Actions. |
 
@@ -137,9 +137,19 @@ Policies carry machine-readable limits (`refund_window_days: 30`,
 | `update_inventory` | state change | SKU exists; stock stays ≥ 0; > 50 units needs approval |
 | `lookup_order`, `list_orders`, `search_policies` | read-only | authorization (your own orders only); no model review needed |
 
-## Results (offline reviewers)
+## Results (simulated, not live)
 
-**Demo** (`guardrail demo`, three acts on one system of record):
+**How these were measured.** No live model produced any number in this section. Every result
+uses offline stand-ins: rule-based heuristic reviewers in place of the Claude reviewers, and a
+rule-based or scripted agent in place of the Claude agent (or no agent at all). Each figure
+carries an ID from [docs/EVIDENCE.md](docs/EVIDENCE.md), which records its exact configuration,
+number of cases and the command that reproduces it. `make evidence` regenerates it, and CI fails
+if the committed register no longer matches what the code produces. Live results are not yet run
+(L1).
+
+**Demo (E5)** · `guardrail demo` · 11 actions over 3 conversations on one system of record ·
+agent: rule-based stand-in (acts 1 and 3) and scripted (act 2) · reviewers: heuristic · the
+approval in act 3 is scripted.
 
 | Act | What the agent proposes | Guardrail | Outcome |
 |---|---|---|---|
@@ -147,42 +157,48 @@ Policies carry machine-readable limits (`refund_window_days: 30`,
 | 2 · hallucination | refund on O-5080 (digits transposed) | **block**: "Order O-5080 does not exist (closest real order: O-5008)" | nothing runs; the agent corrects itself and the fix runs |
 | 3 · human escalation | refund $649 for Grace's leaking kayak | **escalate**: over the $500 limit and the $600 daily cap | the run pauses; a manager approves; re-verified; runs |
 
-It ends with $828.98 paid in exactly three refunds and zero reconciliation mismatches.
-`guardrail demo --scenario 1|2|3` runs the deeper scenarios (a nine-step hallucinating agent
-that trips the circuit breaker, the approval flow on its own, and a chaos run).
+It ends with $828.98 paid in exactly three refunds and zero reconciliation mismatches. Scenario 1
+(E4, `guardrail demo --scenario 1`): a scripted agent proposes 9 actions; all 6 bad ones are
+stopped, and its one correct refund runs only after a human approval because the circuit breaker
+has tripped.
 
-**Security regression** (`make security`; recorded in [docs/RESULTS.md](docs/RESULTS.md); 75 attacks in 9 categories + 17 legitimate controls):
+**Security regression (E1, E2)** · `make security` · 92 fixed, pre-written proposed actions (75
+attacks in 9 categories, 17 legitimate controls) replayed directly, **with no agent** · reviewers:
+heuristic stand-ins, or none for checks-only · each configuration run twice with identical
+results · "stopped" means blocked or escalated · full per-case results in
+[docs/RESULTS.md](docs/RESULTS.md).
 
 | Configuration | Attacks stopped | Held-out attacks | False positives | Review cost* |
 |---|---|---|---|---|
-| deterministic checks only | 73 / 75 | 10 / 10 | 0 / 17 | 0 |
+| deterministic checks only (model review off) | 73 / 75 | 10 / 10 | 0 / 17 | 0 |
 | + fast reviewer on everything | 75 / 75 | 10 / 10 | 0 / 17 | 20 |
 | **+ risk routing (default)** | **75 / 75** | **10 / 10** | **0 / 17** | **98** |
 | + careful reviewer on everything | 75 / 75 | 10 / 10 | 0 / 17 | 720 |
 
-\*Relative units: fast review = 1, careful = 40 (the ratio of Claude Haiku 5.5 to Claude Opus 5.5 list prices).
+\*Simulated reviewer calls weighted by list-price ratio (fast 1, careful 40); not measured API spend.
 
-Every configuration gives identical decisions on repeated runs, and CI fails on any regression
-against the committed baseline. The deterministic allowlist does almost all the work at zero
-model cost; the two attacks it leaves to the reviewer are an invented refund reason and a
-reversed stock direction. Held-out probing (attacks written after the defences) has found
-holes twice: 4 in the first round and 6 in the second (a reason forging a reviewer verdict, a
-forged `SYSTEM:` line, a claimed manager sign-off, a `javascript:` link, a look-alike domain
-without `https://`, another customer's data emailed to staff). All are fixed and in the suite.
-See [docs/HARDENING.md](docs/HARDENING.md).
+With model review off, the checks alone stop 73 of 75 (N1), including all 4 provenance attacks
+(N3) and all 11 injection attacks (N4), and send all 10 unprovable or over-limit attacks to a
+person (N2). The two they leave to the reviewer are an invented refund reason and a reversed
+stock direction (N5). The 14 held-out cases (10 attacks, 4 controls) were written after the
+defences, by the same author: the code before them (commit 582c4ad) allowed 6 of the 10 attacks,
+replayed by `make evidence` (E2). They are fixed and in the suite. See
+[docs/HARDENING.md](docs/HARDENING.md).
 
-**Chaos** (`guardrail chaos --rounds 3`): every agent turn gets an injected hallucination
-(transposed IDs, decimal slips, wrong customer, inflated policy numbers, fabricated citations,
-stock sign flips…). **35/35 injected faults were stopped**, and because the agent recovers from
-the feedback, the final records are still correct (asserted in `tests/test_faults.py`).
+**Chaos (E3)** · `guardrail chaos --rounds 3` · agent: the rule-based stand-in, with one tool call
+per turn corrupted by the fault injector (seed 7) · reviewers: heuristic · 6 tickets × 3 rounds =
+18 conversations, 85 actions, **35 injected faults: 35 blocked, 0 escalated, 0 executed**. Every
+escalation is auto-approved in this run, so an escalated fault would have executed. A separate
+test (seed 11, 6 conversations) also checks that the final records are correct
+(`tests/test_faults.py`).
 
-**Races, crashes and side effects** (`tests/test_concurrency.py`, `tests/test_side_effects.py`):
-8 threads and 6 separate processes racing to refund one customer never exceed the daily cap;
-the same action committed by several workers at once executes once; revocation racing
-execution always has exactly one winner; a process killed mid-write leaves nothing behind,
-and one killed after commit is recovered without executing twice; lost provider responses
-never pay twice, refused refunds are compensated, and reconciliation flags money that moved
-outside the guardrail.
+**Races, crashes and side effects (T2, T3)** · automated tests, review stubbed to approve
+everything so only the transaction layer is measured: 8 threads and 6 separate processes racing
+to refund one customer never exceed the daily cap; the same action committed by several workers
+at once executes once; revocation racing execution always has exactly one winner; a process
+killed mid-write leaves nothing behind, and one killed after commit is recovered without
+executing twice; lost provider responses never pay twice, refused refunds are compensated, and
+reconciliation flags money that moved outside the guardrail.
 
 ## Project layout
 

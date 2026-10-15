@@ -27,7 +27,7 @@ against what is in this folder.
 | Minimum viable | Map the plan to each Minimum Viable bullet | ✅ both bullets mapped |
 | Stretch ambitions | Which stretch goals, and why they are the next step | ✅ both stretch goals |
 | Novelty / differentiation | Say where you deviate from the obvious baseline | ✅ five differences |
-| Evaluation plan | Metrics, baselines, datasets/simulators | ✅ ablation over four configurations |
+| Evaluation plan | Metrics, baselines, datasets/simulators | ✅ ablation over four configurations; each figure states its configuration, cases, and that it is simulated (see `docs/EVIDENCE.md`) |
 | Feasibility and risks | Skills of the 3 members, why it is doable in time, what could go wrong | ✅ roles, dated milestones, risks (**fill in names and skills**) |
 
 ## How it is scored
@@ -63,6 +63,7 @@ Each criterion is scored 1–5 (5 = precise, deep, feasible, original). Weighted
 | `architecture.svg` | The diagram on its own, if the form takes a separate image |
 | `CLAUDE_PROMPT.md` | Prompts to regenerate or restyle the PDF and diagram with Claude |
 | `deck/` | Source of the optional 13-slide presentation (not required for Round 1) |
+| `../EVIDENCE.md` | The evidence register: every number in the abstract and deck, with its configuration, case count, simulated-or-live status and reproduce command |
 
 ## Before you submit
 

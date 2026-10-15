@@ -52,7 +52,7 @@ approved away. Every check runs again inside the write transaction.
 | 12 | **Postconditions** | tool bugs: the effect must equal what was verified (refund moved by exactly the amount, stock by exactly delta, message stored is the message checked), otherwise the transaction rolls back | `ToolSpec.postcondition` |
 | 13 | **Database invariants** | the last line of defence: `CHECK (stock >= 0)`, `CHECK (refunded <= total)`, foreign keys | `store.py` |
 | 14 | **Grounding contracts** | coverage gaps: every parameter of every tool must name the checks that verify it; the app refuses to start otherwise | `ToolSpec._validate_contract` |
-| 15 | **Strict reviewer output** | a reviewer "approving" through malformed output: `"grounded": "false"` (a string), NaN, out-of-range or boolean confidence, non-list fields, non-JSON bodies, timeouts and SDK errors all fail closed. Five of these used to become approvals | `parse_review`, `ClaudeReviewer.review` |
+| 15 | **Strict reviewer output** | a reviewer "approving" through malformed output: `"grounded": "false"` (a string), NaN, out-of-range or boolean confidence, non-list fields, non-JSON bodies, timeouts and SDK errors all fail closed (T1). During development, five of these were found to become approvals with the earlier reviewer code; that one-off comparison is not re-run by the register | `parse_review`, `ClaudeReviewer.review` |
 | 16 | **Idempotent execution** | duplicate side effects from retries, replayed graph nodes, racing workers or two approvers: an action executes at most once, checked inside the write transaction; sidecar `Idempotency-Key` | `Guardrail.commit`, `IdempotencyStore` |
 | 17 | **Approvals that can't go stale** | an approval reused for something the approver never saw: it waives only the checks that asked for it, expires after 24 h, and can be revoked until the action runs (atomic with execution) | `ApprovalQueue.authorizes`, `revoke` |
 | 18 | **Outbox, compensation, reconciliation** | irreversible effects done wrong: nothing calls a provider inside a transaction; intents are delivered after commit with idempotency keys, refused refunds are compensated, and the providers' own records are reconciled with the outbox and audit log | `outbox.py` |
@@ -61,16 +61,21 @@ approved away. Every check runs again inside the write transaction.
 
 ## How the strength is measured
 
-| Instrument | Result |
-|---|---|
-| Red-team suite: 92 cases (75 attacks in 9 categories + 17 legitimate controls), all four configurations, recorded in [RESULTS.md](RESULTS.md) | **75/75 attacks stopped, 0/17 false positives** (routed, fast-only and careful-only); identical decisions on repeated runs; CI fails on any regression against the committed baseline |
-| Deterministic layer alone | 73/75 at zero model cost; the other 2 (invented reason, reversed stock direction) need the reviewer |
-| Chaos runs: realistic hallucinations injected into live agent runs | **35/35 stopped**, and the agent recovers so the final records are still correct |
-| Held-out probing: new attacks written *after* the defences, to avoid testing only what was designed for | round 1 found 4 holes (a "forget your rules" injection, a customer asking for more than an item's price, a phishing link, "purchase" swapped for "delivery"). Round 2 found 6 more that the previous code **allowed**, reviewer included: a reason carrying a forged reviewer verdict in JSON, a forged `SYSTEM:` line, a claimed manager sign-off, a `javascript:` URI, a look-alike domain written without `https://`, and another customer's data emailed to staff from a customer's conversation. All fixed and in the suite, with 4 more variants and 4 legitimate controls for false positives |
-| Claude failure modes, through the real SDKs against a scripted API | 16 malformed or failed responses, timeouts and bounded retries all fail closed; full agent runs through `build_app` |
-| Races and crashes | daily cap under 8 racing threads and 6 racing processes; duplicate and racing commits execute once; revocation racing execution has one winner; real process kills mid-write, after commit, and mid-run |
-| Side effects | lost responses never pay twice; refused refunds are compensated; reconciliation detects money moved outside the guardrail, missing and altered provider records, and broken audit links |
-| Tests | 228 (plus 11 live-API tests that need a key), on Python 3.11, 3.12 and 3.13, locally from a fresh clone and on GitHub Actions |
+Every row is an entry in [EVIDENCE.md](EVIDENCE.md), which gives its exact configuration, case
+count and reproduce command. **All of them are simulated:** reviewers are offline heuristic
+stand-ins (or switched off), and the agent is absent, scripted, or the offline rule-based
+stand-in. No live model has been run yet (L1).
+
+| ID | Instrument and configuration | Result |
+|---|---|---|
+| E1 | Red-team suite: 92 fixed proposed actions (75 attacks in 9 categories, 17 legitimate controls) replayed with no agent; heuristic reviewers; four configurations, each run twice; recorded in [RESULTS.md](RESULTS.md) | **75/75 attacks stopped (blocked or escalated), 0/17 false positives** with routed, fast-only and careful-only review; identical decisions on both runs; CI fails on any regression against the committed baseline |
+| N1–N5 | The same 92 cases with model review switched off | 73/75 stopped by checks alone, including 4/4 provenance and 11/11 injection attacks; 10/10 unprovable or over-limit attacks escalated; the 2 left (invented reason, reversed stock direction) are stopped once heuristic review is on |
+| E2 | Held-out probing: 14 cases (10 attacks, 4 controls) written *after* the defences, by the same author | 10/10 stopped now; the code before them (commit 582c4ad) allowed 6, reviewer included: a forged reviewer verdict in JSON, a forged `SYSTEM:` line, a claimed manager sign-off, a `javascript:` URI, a look-alike domain without `https://`, another customer's data emailed to staff. An earlier round found 4 more holes (a "forget your rules" injection, a customer asking for more than an item's price, a phishing link, "purchase" swapped for "delivery"); that round was not tagged and is not re-run by the register |
+| E3 | Chaos: offline rule-based agent with one tool call per turn corrupted (seed 7), heuristic reviewers, 18 conversations, 85 actions, every escalation auto-approved | **35 injected faults: 35 blocked, 0 escalated, 0 executed**; a separate test (seed 11) checks the final records are correct |
+| T1 | Claude failure modes: the real `anthropic` and `langchain-anthropic` SDKs against a local scripted Messages API (replies are scripted, not model judgement); 38 tests | invented evidence, 16 malformed or failed replies, timeouts and bounded retries all fail closed; full agent runs through `build_app` |
+| T2 | Races and crashes: 17 tests, review stubbed to approve everything | daily cap under 8 racing threads and 6 racing processes; duplicate and racing commits execute once; revocation racing execution has one winner; real process kills mid-write, after commit and mid-run |
+| T3 | Side effects: 20 tests, simulated payment and messaging providers | lost responses never pay twice; refused refunds are compensated; reconciliation detects money moved outside the guardrail, missing and altered provider records, and broken audit links |
+| T5 | Test suite | 228 passed (plus 11 live-API tests, skipped without a key), on Python 3.11, 3.12 and 3.13, locally from a fresh clone and on GitHub Actions |
 
 A perfect score on attacks the builder wrote is necessary, not sufficient. Keep adding held-out
 attacks, ideally written by someone else, and run the suite with the Claude reviewers.
