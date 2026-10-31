@@ -42,3 +42,5 @@ Current figures use rule-based stand-ins, not live models. On the 92 cases, repl
 ## Feasibility and risks
 
 Pratham S leads and owns the checks and agent integration; Varsha R owns evaluation and red-teaming; Anjalee owns the backend, dashboard and deployment. The prototype passes 229 automated tests, so remaining time goes to evaluation: 10–16 Nov live reviewers; 17–23 Nov outside attacks; 24–30 Nov τ-bench and latency; 1 Dec midway report; 2–14 Dec reference-based tools and demo rehearsal. The main risk is live models judging differently from our stand-ins, so we measure that first; the checks themselves need no model. Other risks: overfitting to our own attacks (outside attacks), too many escalations (false stops are a headline metric), and an API outage at the demo (it fails safe and runs offline).
+
+Guardrail creates a trusted execution boundary between AI agents and real-world systems, ensuring every action is validated before it can affect users or records. By combining deterministic checks, independent model review, human oversight and transactional execution, it makes autonomous agents safer, more accountable and reliable in real-world applications.
